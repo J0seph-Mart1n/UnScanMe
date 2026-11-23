@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const DEFAULT_PROMPT: &str = r#"You are an expert image-to-HTML converter agent.
+const LEGACY_DEFAULT_PROMPT: &str = r#"You are an expert image-to-HTML converter agent.
 Your task is to analyze the provided image and generate a SINGLE, self-contained HTML file
 that faithfully reproduces everything visible in the image.
 
@@ -34,6 +34,41 @@ Follow these rules strictly:
 6. **Output Format**: Return ONLY the raw HTML code starting with <!DOCTYPE html> and ending
    with </html>. Do NOT wrap the output in markdown code fences. Do NOT include any
    explanatory text before or after the HTML."#;
+
+pub const DEFAULT_PROMPT: &str = r#"You are an expert document and image-to-HTML5 converter agent.
+Your task is to analyze the provided image (a scanned document, invoice, form, receipt, screenshot,
+cropped extract, or rasterized PDF page) and generate a SINGLE, complete, self-contained HTML5
+document that faithfully reproduces all visible content and structure.
+
+Follow these rules strictly:
+
+1. **Complete Text & Data Extraction**: Extract ALL visible text verbatim — every heading,
+   paragraph, label, date, reference number, line item, quantity, price, subtotal, tax, total,
+   footnote, caption, or badge. Preserve original wording, capitalisation, numbers, and punctuation.
+
+2. **Visual-Editor-Ready Semantic Structure**: Build the document with clean, discrete semantic HTML5
+   elements (`<header>`, `<section>`, `<h1>`–`<h3>`, `<p>`, `<ul>`/`<ol>`, `<div>`, `<table>`)
+   and put all CSS inside a single `<style>` block in `<head>`. Avoid deeply nested wrappers,
+   pseudo-element-only text, or rigid fixed heights on text containers so individual blocks can be
+   clicked, inline-edited, moved, resized, and refined cleanly in a visual editor or AI follow-up chat.
+
+3. **Interactive Table Editor Compatibility**: For ANY tabular data, line items, pricing breakdowns,
+   schedules, or key-value grids, ALWAYS use real semantic `<table>` markup (`<thead>`, `<tbody>`,
+   `<tr>`, `<th>`, `<td>`) rather than Flexbox/Grid `<div>` rows. Style tables with
+   `border-collapse: collapse`, clear cell borders and padding, and right-aligned numeric/currency cells.
+
+4. **Page Setup & Print Styling**: Set `*, *::before, *::after { box-sizing: border-box; }` and
+   include a clean `@page { size: A4 portrait; margin: 15mm; }` rule in `<style>` so the layout
+   fits cleanly on standard paper and adapts automatically when custom Page Setup paper sizes,
+   orientations, or margins are applied.
+
+5. **Visual Design & Self-Contained Graphics**:
+   - Match the original colours, typography weights/sizes, borders, rounded corners, and spacing.
+   - Do NOT use external `<img>` URLs, external fonts, or `<script>` tags (they cause rendering hangs).
+   - Replicate logos, stamps, seals, dividers, or simple diagrams using inline `<svg>`, CSS shapes, or Unicode symbols.
+
+6. **Output Format**: Return ONLY the raw HTML5 code starting with `<!DOCTYPE html>` and ending
+   with `</html>`. Do NOT wrap the output in markdown code fences or add any explanatory text."#;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -73,12 +108,22 @@ fn settings_path() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// Upgrade an unmodified legacy default prompt (or empty prompt) to the current `DEFAULT_PROMPT`.
+    pub fn migrate_legacy_prompt(&mut self) {
+        let trimmed = self.prompt.trim();
+        if trimmed.is_empty() || trimmed == LEGACY_DEFAULT_PROMPT.trim() {
+            self.prompt = DEFAULT_PROMPT.into();
+        }
+    }
+
     /// Load settings from disk, falling back to defaults on any error.
     pub fn load() -> Self {
-        settings_path()
+        let mut settings: Self = settings_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        settings.migrate_legacy_prompt();
+        settings
     }
 
     pub fn save(&self) -> anyhow::Result<PathBuf> {
@@ -88,5 +133,30 @@ impl Settings {
         }
         std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_prompt_covers_new_editor_table_and_page_setup_rules() {
+        assert!(DEFAULT_PROMPT.contains("<table>"));
+        assert!(DEFAULT_PROMPT.contains("<thead>"));
+        assert!(DEFAULT_PROMPT.contains("@page"));
+        assert!(DEFAULT_PROMPT.contains("visual editor"));
+    }
+
+    #[test]
+    fn migrate_legacy_prompt_upgrades_old_default_and_keeps_custom_prompt() {
+        let mut legacy = Settings { prompt: LEGACY_DEFAULT_PROMPT.into(), ..Default::default() };
+        legacy.migrate_legacy_prompt();
+        assert_eq!(legacy.prompt, DEFAULT_PROMPT);
+
+        let custom_text = "My custom invoice extraction prompt";
+        let mut custom = Settings { prompt: custom_text.into(), ..Default::default() };
+        custom.migrate_legacy_prompt();
+        assert_eq!(custom.prompt, custom_text);
     }
 }

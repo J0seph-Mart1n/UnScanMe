@@ -49,14 +49,21 @@
       case "line": return "Line";
       case "arrow": return "Arrow";
       case "image": return "Image";
+      case "table": return "Table";
+      case "td": return "Cell";
+      case "th": return "Header";
       default: return el.tagName ? el.tagName.toLowerCase() : "el";
     }
+  }
+
+  function isTableCell(el) {
+    return !!(el && (el.tagName === "TD" || el.tagName === "TH"));
   }
 
   function isTextEditable(el) {
     if (!el) return false;
     const kind = elementKind(el);
-    if (kind === "image" || kind === "line" || kind === "arrow") return false;
+    if (kind === "image" || kind === "line" || kind === "arrow" || el.tagName === "TABLE") return false;
     if (VOID_TAGS.has(el.tagName)) return false;
     return true;
   }
@@ -73,6 +80,7 @@
     clone.querySelectorAll("[data-df-editor-ui='1']").forEach((n) => n.remove());
     clone.querySelectorAll("[contenteditable]").forEach((n) => n.removeAttribute("contenteditable"));
     clone.querySelectorAll("[data-df-editing]").forEach((n) => n.removeAttribute("data-df-editing"));
+    clone.querySelectorAll("[data-df-selected]").forEach((n) => n.removeAttribute("data-df-selected"));
     return "<!DOCTYPE html>\n" + clone.outerHTML;
   }
 
@@ -85,6 +93,7 @@
     let uiLayer = null;
     let selectBox = null;
     let badgeEl = null;
+    let moveHandleEl = null;
     let handleEls = {};
     let dragState = null;
     let history = [];
@@ -148,6 +157,32 @@
       const underline = (cs.textDecorationLine || cs.textDecoration || "").includes("underline");
       const textAlign = ["center", "right"].includes(cs.textAlign) ? cs.textAlign : "left";
 
+      let inTable = false;
+      let tableRows = 0;
+      let tableCols = 0;
+      let cellRow = 0;
+      let cellCol = 0;
+      let isHeaderCell = false;
+
+      const tableEl = el.tagName === "TABLE" ? el : (el.closest ? el.closest("table") : null);
+      if (tableEl && tableEl.rows) {
+        inTable = true;
+        tableRows = tableEl.rows.length;
+        for (let r = 0; r < tableEl.rows.length; r++) {
+          tableCols = Math.max(tableCols, tableEl.rows[r].cells.length);
+        }
+        if (isTableCell(el)) {
+          isHeaderCell = el.tagName === "TH";
+          const rowEl = el.parentElement;
+          if (rowEl && typeof rowEl.rowIndex === "number") {
+            cellRow = rowEl.rowIndex + 1;
+          }
+          if (typeof el.cellIndex === "number") {
+            cellCol = el.cellIndex + 1;
+          }
+        }
+      }
+
       return {
         label: elementLabel(el),
         kind: elementKind(el),
@@ -167,6 +202,12 @@
         underline,
         text_align: textAlign,
         is_text_editable: isTextEditable(el),
+        in_table: inTable,
+        table_rows: tableRows,
+        table_cols: tableCols,
+        cell_row: cellRow,
+        cell_col: cellCol,
+        is_header_cell: isHeaderCell,
       };
     }
 
@@ -195,6 +236,17 @@
       selectBox.style.width = Math.max(4, rect.width) + "px";
       selectBox.style.height = Math.max(4, rect.height) + "px";
       selectBox.classList.toggle("is-editing", editing === selected);
+      selectBox.classList.toggle("is-top-edge", rect.top + scrollY < 24);
+
+      if (moveHandleEl) {
+        if (editing === selected || dragState) {
+          moveHandleEl.style.display = "none";
+        } else {
+          const isTbl = selected.tagName === "TABLE" || isTableCell(selected);
+          moveHandleEl.textContent = isTbl ? "⠿ Move Table" : "⠿ Move";
+          moveHandleEl.style.display = "inline-flex";
+        }
+      }
 
       if (badgeEl) {
         if (dragState && dragState.mode === "move") {
@@ -223,14 +275,14 @@
           }
           #${UI_ID} .df-select-box {
             position: absolute; display: none; box-sizing: border-box;
-            border: 1.5px solid #3b6ef5; pointer-events: none;
+            border: 1.5px solid #16a34a; pointer-events: none;
           }
           #${UI_ID} .df-select-box.is-editing {
             border-color: #22c55e; border-style: dashed;
           }
           #${UI_ID} .df-handle {
             position: absolute; width: 9px; height: 9px; background: #ffffff;
-            border: 1.5px solid #3b6ef5; border-radius: 2px;
+            border: 1.5px solid #16a34a; border-radius: 2px;
             pointer-events: auto; box-sizing: border-box;
           }
           #${UI_ID} .df-select-box.is-editing .df-handle { display: none; }
@@ -242,11 +294,26 @@
           #${UI_ID} .df-handle[data-h="s"]  { left: calc(50% - 4px); bottom: -5px; cursor: ns-resize; }
           #${UI_ID} .df-handle[data-h="sw"] { left: -5px; bottom: -5px; cursor: nesw-resize; }
           #${UI_ID} .df-handle[data-h="w"]  { left: -5px; top: calc(50% - 4px); cursor: ew-resize; }
+          #${UI_ID} .df-move-handle {
+            position: absolute; left: 0; top: -22px; display: none;
+            align-items: center; gap: 4px; height: 18px; padding: 0 7px;
+            border-radius: 4px; font: 600 10px/18px system-ui, sans-serif;
+            background: #16a34a; color: #050706; white-space: nowrap;
+            pointer-events: auto; cursor: grab; user-select: none;
+            box-shadow: 0 2px 6px rgba(0,0,0,.35);
+          }
+          #${UI_ID} .df-move-handle:active { cursor: grabbing; }
+          #${UI_ID} .df-select-box.is-top-edge .df-move-handle { top: 2px; left: 2px; }
+          #${UI_ID} .df-select-box.is-editing .df-move-handle { display: none !important; }
           #${UI_ID} .df-badge {
             position: absolute; left: 0; top: -22px; display: none;
             padding: 1px 6px; border-radius: 4px; font: 600 11px/16px system-ui, sans-serif;
             background: #111827; color: #f8fafc; white-space: nowrap;
             box-shadow: 0 2px 6px rgba(0,0,0,.35);
+          }
+          #${UI_ID} .df-select-box.is-top-edge .df-badge { top: 2px; left: 2px; }
+          table[data-df-selected="1"], table[data-df-selected="1"] td, table[data-df-selected="1"] th {
+            cursor: move !important;
           }
           [data-df-editing="1"] { outline: none !important; cursor: text !important; }
         `;
@@ -261,6 +328,26 @@
         selectBox = doc.createElement("div");
         selectBox.className = "df-select-box";
         selectBox.setAttribute("data-df-editor-ui", "1");
+
+        moveHandleEl = doc.createElement("div");
+        moveHandleEl.className = "df-move-handle";
+        moveHandleEl.textContent = "⠿ Move";
+        moveHandleEl.setAttribute("data-df-editor-ui", "1");
+        moveHandleEl.addEventListener("mousedown", (e) => {
+          if (e.button !== 0 || !selected || !doc) return;
+          e.preventDefault();
+          e.stopPropagation();
+          let target = selected;
+          if (isTableCell(selected)) {
+            const tbl = selected.closest ? selected.closest("table") : null;
+            if (tbl) {
+              selectElement(tbl);
+              target = tbl;
+            }
+          }
+          startMove(e, target);
+        });
+        selectBox.appendChild(moveHandleEl);
 
         badgeEl = doc.createElement("div");
         badgeEl.className = "df-badge";
@@ -283,6 +370,7 @@
       } else {
         uiLayer = doc.getElementById(UI_ID);
         selectBox = uiLayer.querySelector(".df-select-box");
+        moveHandleEl = uiLayer.querySelector(".df-move-handle");
         badgeEl = uiLayer.querySelector(".df-badge");
       }
     }
@@ -311,7 +399,13 @@
       if (editing && editing !== el) {
         stopEditing(true);
       }
+      if (selected && selected !== el && selected.removeAttribute) {
+        selected.removeAttribute("data-df-selected");
+      }
       selected = el;
+      if (selected && selected.tagName === "TABLE") {
+        selected.setAttribute("data-df-selected", "1");
+      }
       updateOverlay();
       emitSelection();
     }
@@ -330,6 +424,10 @@
     function resolveSelectableTarget(target) {
       if (!target || !doc) return null;
       if (isEditorNode(target)) return null;
+      if (target.closest) {
+        const cell = target.closest("td, th");
+        if (cell) return cell;
+      }
       let cur = target;
       while (cur && cur !== doc.body && cur !== doc.documentElement) {
         if (cur.getAttribute && cur.getAttribute("data-df-placed") === "1") {
@@ -352,7 +450,9 @@
       return target;
     }
 
-    function startMove(e, el) {
+    function startMove(e, el, pendingCell) {
+      if (isTableCell(el)) return;
+      e.preventDefault();
       const win = doc.defaultView;
       const cs = win.getComputedStyle(el);
       const isPlaced = el.getAttribute("data-df-placed") === "1";
@@ -364,9 +464,14 @@
       const startLeft = parseFloat(el.style.left) || (pos === "relative" ? 0 : el.offsetLeft);
       const startTop = parseFloat(el.style.top) || (pos === "relative" ? 0 : el.offsetTop);
 
+      if (doc.body) {
+        doc.body.style.cursor = "grabbing";
+      }
+
       dragState = {
         mode: "move",
         el,
+        pendingCell: pendingCell || null,
         startX: e.clientX,
         startY: e.clientY,
         startLeft,
@@ -454,10 +559,17 @@
 
     function onMouseUp() {
       if (!dragState) return;
-      const didMove = dragState.moved;
+      const { moved, pendingCell } = dragState;
       dragState = null;
+      if (doc && doc.body) {
+        doc.body.style.cursor = "";
+      }
+      if (!moved && pendingCell) {
+        selectElement(pendingCell);
+        return;
+      }
       updateOverlay();
-      if (didMove) {
+      if (moved) {
         emitHtml(true);
         emitSelection();
       }
@@ -469,6 +581,18 @@
         if (e.key === "Escape") {
           e.preventDefault();
           stopEditing(true);
+        } else if (e.key === "Tab" && isTableCell(editing)) {
+          e.preventDefault();
+          const table = editing.closest("table");
+          if (table) {
+            const cells = Array.from(table.querySelectorAll("th, td"));
+            const idx = cells.indexOf(editing);
+            const nextIdx = e.shiftKey ? idx - 1 : idx + 1;
+            stopEditing(true);
+            if (nextIdx >= 0 && nextIdx < cells.length) {
+              startEditing(cells[nextIdx]);
+            }
+          }
         }
         return;
       }
@@ -493,11 +617,44 @@
       if (!selected) return;
       if (e.key === "Escape") {
         selectElement(null);
+      } else if ((e.key === "Enter" || e.key === "F2") && isTableCell(selected)) {
+        e.preventDefault();
+        startEditing(selected);
+      } else if (e.key === "Tab" && isTableCell(selected)) {
+        e.preventDefault();
+        const table = selected.closest("table");
+        if (table) {
+          const cells = Array.from(table.querySelectorAll("th, td"));
+          const idx = cells.indexOf(selected);
+          const nextIdx = e.shiftKey ? idx - 1 : idx + 1;
+          if (nextIdx >= 0 && nextIdx < cells.length) {
+            selectElement(cells[nextIdx]);
+          }
+        }
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         handleCommand({ type: "delete_selected" });
       } else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
         e.preventDefault();
+        if (isTableCell(selected)) {
+          const table = selected.closest("table");
+          const rowEl = selected.parentElement;
+          if (table && rowEl && typeof rowEl.rowIndex === "number" && typeof selected.cellIndex === "number") {
+            let r = rowEl.rowIndex;
+            let c = selected.cellIndex;
+            if (e.key === "ArrowLeft") c -= 1;
+            if (e.key === "ArrowRight") c += 1;
+            if (e.key === "ArrowUp") r -= 1;
+            if (e.key === "ArrowDown") r += 1;
+            if (r >= 0 && r < table.rows.length) {
+              const targetRow = table.rows[r];
+              if (c >= 0 && c < targetRow.cells.length) {
+                selectElement(targetRow.cells[c]);
+              }
+            }
+          }
+          return;
+        }
         const step = e.shiftKey ? 10 : 1;
         const win = doc.defaultView;
         const cs = win.getComputedStyle(selected);
@@ -523,6 +680,11 @@
       doc.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
         if (isEditorNode(e.target)) return;
+        if (selected && selected.tagName === "TABLE" && selected.contains(e.target)) {
+          const clickedCell = e.target.closest ? e.target.closest("td, th") : null;
+          startMove(e, selected, clickedCell);
+          return;
+        }
         const target = resolveSelectableTarget(e.target);
         if (!target) {
           selectElement(null);
@@ -556,6 +718,12 @@
           stopEditing(true);
         }
       }, true);
+
+      doc.defaultView.addEventListener("blur", () => {
+        if (editing) {
+          stopEditing(true);
+        }
+      });
 
       doc.addEventListener("mousemove", onMouseMove);
       doc.addEventListener("mouseup", onMouseUp);
@@ -630,8 +798,8 @@
         el.setAttribute("data-df-kind", "rect");
         el.style.width = "160px";
         el.style.height = "90px";
-        el.style.background = "#e0e7ff";
-        el.style.border = "2px solid #3b6ef5";
+        el.style.background = "#dcfce7";
+        el.style.border = "2px solid #16a34a";
         el.style.borderRadius = "6px";
         el.style.display = "flex";
         el.style.alignItems = "center";
@@ -644,8 +812,8 @@
         el.setAttribute("data-df-kind", "ellipse");
         el.style.width = "110px";
         el.style.height = "110px";
-        el.style.background = "#dbeafe";
-        el.style.border = "2px solid #2563eb";
+        el.style.background = "#bbf7d0";
+        el.style.border = "2px solid #15803d";
         el.style.borderRadius = "50%";
         el.style.display = "flex";
         el.style.alignItems = "center";
@@ -688,6 +856,166 @@
       img.style.pointerEvents = "none";
       wrap.appendChild(img);
       placeNewElement(wrap, false);
+    }
+
+    function makeTableCell(tag, text) {
+      const cell = doc.createElement(tag);
+      cell.style.border = "1px solid #cbd5e1";
+      cell.style.padding = "7px 10px";
+      cell.style.textAlign = "left";
+      cell.style.minWidth = "60px";
+      if (tag === "th") {
+        cell.style.background = "#f1f5f9";
+        cell.style.fontWeight = "600";
+      }
+      cell.textContent = text;
+      return cell;
+    }
+
+    function insertTable(rows, cols) {
+      const rCount = Math.max(1, Math.min(20, parseInt(rows, 10) || 3));
+      const cCount = Math.max(1, Math.min(12, parseInt(cols, 10) || 3));
+      const table = doc.createElement("table");
+      table.setAttribute("data-df-kind", "table");
+      table.style.borderCollapse = "collapse";
+      table.style.width = "480px";
+      table.style.background = "#ffffff";
+      table.style.color = "#111827";
+      table.style.fontSize = "13px";
+
+      const thead = doc.createElement("thead");
+      const hRow = doc.createElement("tr");
+      for (let c = 0; c < cCount; c++) {
+        hRow.appendChild(makeTableCell("th", `Column ${c + 1}`));
+      }
+      thead.appendChild(hRow);
+      table.appendChild(thead);
+
+      if (rCount > 1) {
+        const tbody = doc.createElement("tbody");
+        for (let r = 1; r < rCount; r++) {
+          const tr = doc.createElement("tr");
+          for (let c = 0; c < cCount; c++) {
+            tr.appendChild(makeTableCell("td", `Cell ${r}.${c + 1}`));
+          }
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+      }
+
+      placeNewElement(table, false);
+    }
+
+    function applyTableAction(action) {
+      if (!selected || !doc) return;
+      const cell = isTableCell(selected) ? selected : null;
+      const table = selected.tagName === "TABLE" ? selected : (selected.closest ? selected.closest("table") : null);
+      if (!table || !table.rows || table.rows.length === 0) return;
+
+      if (action === "select_table") {
+        selectElement(table);
+        return;
+      }
+
+      const row = cell ? cell.parentElement : table.rows[table.rows.length - 1];
+      const rowIdx = row && typeof row.rowIndex === "number" ? row.rowIndex : table.rows.length - 1;
+      const colIdx = cell && typeof cell.cellIndex === "number" ? cell.cellIndex : 0;
+      const maxCols = Array.from(table.rows).reduce((m, r) => Math.max(m, r.cells.length), 1);
+
+      let nextSelect = selected;
+
+      switch (action) {
+        case "insert_row_above":
+        case "insert_row_below": {
+          const container = row && row.parentElement ? row.parentElement : table;
+          const inThead = container.tagName === "THEAD";
+          const cellTag = inThead && action === "insert_row_above" ? "th" : "td";
+          const newTr = doc.createElement("tr");
+          for (let c = 0; c < maxCols; c++) {
+            newTr.appendChild(makeTableCell(cellTag, ""));
+          }
+          if (inThead && action === "insert_row_below") {
+            const tbody = table.tBodies[0] || table.appendChild(doc.createElement("tbody"));
+            tbody.insertBefore(newTr, tbody.firstChild);
+          } else if (action === "insert_row_above") {
+            container.insertBefore(newTr, row);
+          } else {
+            container.insertBefore(newTr, row ? row.nextSibling : null);
+          }
+          nextSelect = newTr.cells[Math.min(colIdx, newTr.cells.length - 1)] || table;
+          break;
+        }
+        case "delete_row": {
+          if (table.rows.length <= 1) return;
+          const targetIdx = Math.min(rowIdx, table.rows.length - 1);
+          const victim = table.rows[targetIdx];
+          if (victim && victim.parentNode) {
+            victim.remove();
+          }
+          const fallbackRow = table.rows[Math.min(targetIdx, table.rows.length - 1)];
+          nextSelect = fallbackRow
+            ? (fallbackRow.cells[Math.min(colIdx, fallbackRow.cells.length - 1)] || table)
+            : table;
+          break;
+        }
+        case "insert_col_left":
+        case "insert_col_right": {
+          const insertAt = action === "insert_col_left" ? colIdx : colIdx + 1;
+          for (let r = 0; r < table.rows.length; r++) {
+            const tr = table.rows[r];
+            const isHdr =
+              (tr.parentElement && tr.parentElement.tagName === "THEAD") ||
+              (tr.cells.length > 0 && Array.from(tr.cells).every((c) => c.tagName === "TH"));
+            const newCell = makeTableCell(isHdr ? "th" : "td", isHdr ? "Header" : "");
+            if (insertAt >= tr.cells.length) {
+              tr.appendChild(newCell);
+            } else {
+              tr.insertBefore(newCell, tr.cells[insertAt]);
+            }
+            if (r === rowIdx) {
+              nextSelect = newCell;
+            }
+          }
+          break;
+        }
+        case "delete_col": {
+          if (maxCols <= 1) return;
+          for (let r = 0; r < table.rows.length; r++) {
+            const tr = table.rows[r];
+            if (tr.cells.length > 1 && colIdx < tr.cells.length) {
+              tr.deleteCell(colIdx);
+            }
+          }
+          const curRow = table.rows[Math.min(rowIdx, table.rows.length - 1)];
+          nextSelect = curRow
+            ? (curRow.cells[Math.min(colIdx, curRow.cells.length - 1)] || table)
+            : table;
+          break;
+        }
+        case "toggle_header": {
+          if (cell) {
+            const newTag = cell.tagName === "TH" ? "td" : "th";
+            const replacement = doc.createElement(newTag);
+            replacement.innerHTML = cell.innerHTML;
+            for (const attr of cell.attributes) {
+              replacement.setAttribute(attr.name, attr.value);
+            }
+            if (newTag === "th") {
+              replacement.style.background = "#f1f5f9";
+              replacement.style.fontWeight = "600";
+            } else {
+              replacement.style.background = "";
+              replacement.style.fontWeight = "";
+            }
+            cell.parentNode.replaceChild(replacement, cell);
+            nextSelect = replacement;
+          }
+          break;
+        }
+      }
+
+      selectElement(nextSelect);
+      emitHtml(true);
     }
 
     function applyStyle(prop, value) {
@@ -777,6 +1105,12 @@
         case "insert_image":
           if (doc) insertImage(cmd.data_url, cmd.alt);
           break;
+        case "insert_table":
+          if (doc) insertTable(cmd.rows, cmd.cols);
+          break;
+        case "table_action":
+          if (doc) applyTableAction(cmd.action);
+          break;
         case "set_style":
           applyStyle(cmd.prop, cmd.value);
           break;
@@ -785,9 +1119,16 @@
           break;
         case "delete_selected":
           if (selected && selected.parentNode) {
-            selected.remove();
-            selectElement(null);
-            emitHtml(true);
+            if (isTableCell(selected)) {
+              selected.textContent = "";
+              updateOverlay();
+              emitHtml(true);
+              emitSelection();
+            } else {
+              selected.remove();
+              selectElement(null);
+              emitHtml(true);
+            }
           }
           break;
         case "duplicate_selected":
@@ -852,7 +1193,10 @@
       send({ type: "ready" });
       while (true) {
         const cmd = await channel.recv();
-        if (!cmd || cmd.type === "shutdown") break;
+        if (!cmd || cmd.type === "shutdown") {
+          if (editing) stopEditing(true);
+          break;
+        }
         handleCommand(cmd);
       }
     }

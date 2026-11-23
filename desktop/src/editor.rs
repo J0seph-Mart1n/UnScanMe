@@ -36,6 +36,20 @@ pub enum LayerDirection {
     Backward,
 }
 
+/// Interactive table structure operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TableActionKind {
+    InsertRowAbove,
+    InsertRowBelow,
+    DeleteRow,
+    InsertColLeft,
+    InsertColRight,
+    DeleteCol,
+    ToggleHeader,
+    SelectTable,
+}
+
 /// Commands sent from Rust (`VisualEditor`) into the JS canvas controller.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -44,6 +58,8 @@ pub enum EditorCommand {
     InsertText,
     InsertShape { shape: ShapeKind },
     InsertImage { data_url: String, alt: String },
+    InsertTable { rows: u32, cols: u32 },
+    TableAction { action: TableActionKind },
     SetStyle { prop: String, value: String },
     ToggleFormat { cmd: FormatCommand },
     DeleteSelected,
@@ -76,6 +92,18 @@ pub struct SelectionInfo {
     pub underline: bool,
     pub text_align: String,
     pub is_text_editable: bool,
+    #[serde(default)]
+    pub in_table: bool,
+    #[serde(default)]
+    pub table_rows: u32,
+    #[serde(default)]
+    pub table_cols: u32,
+    #[serde(default)]
+    pub cell_row: u32,
+    #[serde(default)]
+    pub cell_col: u32,
+    #[serde(default)]
+    pub is_header_cell: bool,
 }
 
 /// Events emitted from the JS canvas controller back to Rust.
@@ -121,6 +149,9 @@ mod tests {
                 data_url: "data:image/png;base64,AAAA".into(),
                 alt: "logo".into(),
             },
+            EditorCommand::InsertTable { rows: 3, cols: 4 },
+            EditorCommand::TableAction { action: TableActionKind::InsertRowBelow },
+            EditorCommand::TableAction { action: TableActionKind::ToggleHeader },
             EditorCommand::ToggleFormat { cmd: FormatCommand::Bold },
             EditorCommand::Reorder { direction: LayerDirection::Forward },
             EditorCommand::Shutdown,
@@ -154,6 +185,12 @@ mod tests {
                 underline: false,
                 text_align: "left".into(),
                 is_text_editable: true,
+                in_table: true,
+                table_rows: 3,
+                table_cols: 4,
+                cell_row: 2,
+                cell_col: 1,
+                is_header_cell: false,
             }),
             can_undo: true,
             can_redo: false,

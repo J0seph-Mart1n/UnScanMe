@@ -88,10 +88,19 @@ Create a SINGLE, complete, self-contained HTML5 document that fulfills the user'
 
 Follow these rules strictly:
 1. **Complete & Realistic Content**: Generate all requested sections, headings, dates, reference numbers, itemized tables, quantities, unit prices, subtotals, taxes (if appropriate), and accurately calculated totals.
-2. **Layout & Print Styling**: Use clean modern HTML5 and CSS inside a single <style> block in <head>. Include `@page { size: A4; margin: 15mm; }` and ensure the layout fits cleanly on an A4 page.
-3. **Tables & Formatting**: Style tables with `border-collapse: collapse`, clear borders, readable padding, and right-aligned numbers/currency.
-4. **No External Resources**: Do NOT use <img> tags, external URLs, JavaScript, or external fonts. Use inline SVG or CSS shapes only if a simple logo/divider is helpful.
-5. **Output Format**: Return ONLY the raw HTML code starting with <!DOCTYPE html> and ending with </html>. Do NOT wrap the output in markdown code fences or include explanatory text."#;
+2. **Layout, Page Setup & Visual Editor Compatibility**: Use clean, discrete semantic HTML5 elements (`<header>`, `<section>`, `<h1>`–`<h3>`, `<p>`, `<div>`, `<table>`) and put all CSS inside a single `<style>` block in `<head>`. Include `*, *::before, *::after { box-sizing: border-box; }` and `@page { size: A4 portrait; margin: 15mm; }` so the layout fits cleanly and adapts when toolbar Page Setup overrides paper size, orientation, or margins.
+3. **Interactive Table Formatting**: For all tabular data, always use real semantic `<table>`, `<thead>`, `<tbody>`, `<tr>`, `<th>`, and `<td>` elements (never div/flexbox fake tables) styled with `border-collapse: collapse`, clear cell borders, readable padding, and right-aligned numbers/currency.
+4. **No External Resources**: Do NOT use external `<img>` URLs, `<script>` tags, or external fonts. Use inline `<svg>` or CSS shapes only if a simple logo/divider is helpful.
+5. **Output Format**: Return ONLY the raw HTML code starting with `<!DOCTYPE html>` and ending with `</html>`. Do NOT wrap the output in markdown code fences or include explanatory text."#;
+
+const REFINE_HTML_PROMPT: &str = r#"You are an expert HTML5 document editor.
+You will receive an existing self-contained HTML5 document and a user instruction requesting a modification.
+
+Follow these rules strictly:
+1. **Targeted Changes**: Apply ONLY the requested change(s) cleanly while preserving all existing text, data, layout, and styling that were not asked to change.
+2. **Structure & Table Consistency**: Keep calculations (subtotals, taxes, totals), semantic `<table>` (`<thead>`, `<tbody>`, `<th>`, `<td>`) structure, Visual Editor-friendly elements, and `@page` print CSS consistent after your edit.
+3. **No External Resources**: Do NOT introduce external URLs, external fonts, or `<script>` tags. Preserve any existing inline SVG or `data:` image URLs unless told to change them.
+4. **Output Format**: Return ONLY the complete, updated raw HTML code starting with `<!DOCTYPE html>` and ending with `</html>`. Do NOT wrap in markdown code fences or include any explanatory text."#;
 
 async fn send_chat(settings: &Settings, prompt: &str, images: Vec<String>) -> Result<String> {
     let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
@@ -134,6 +143,81 @@ pub async fn image_to_html(settings: &Settings, png: &[u8]) -> Result<String> {
 pub async fn prompt_to_html(settings: &Settings, user_request: &str) -> Result<String> {
     let prompt = format!("{DOCUMENT_GENERATION_PROMPT}\n\nUser request:\n{}", user_request.trim());
     send_chat(settings, &prompt, Vec::new()).await
+}
+
+/// Build the follow-up refinement prompt with concise prior-turn context and the latest HTML.
+pub fn build_refinement_prompt(
+    current_html: &str,
+    prior_requests: &[String],
+    instruction: &str,
+) -> String {
+    let mut prompt = String::from(REFINE_HTML_PROMPT);
+    if !prior_requests.is_empty() {
+        prompt.push_str("\n\nPrevious refinement requests already applied:\n");
+        for (idx, req) in prior_requests.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev().enumerate() {
+            prompt.push_str(&format!("{}. {}\n", idx + 1, req.trim()));
+        }
+    }
+    prompt.push_str("\n\nCurrent HTML document:\n");
+    prompt.push_str(current_html.trim());
+    prompt.push_str("\n\nUser refinement request:\n");
+    prompt.push_str(instruction.trim());
+    prompt
+}
+
+/// Replace large inline `data:image/...;base64,...` URIs with compact placeholders
+/// before sending HTML to Ollama so base64 payloads do not overflow `num_ctx` or get corrupted.
+pub fn protect_data_urls(html: &str) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(html.len());
+    let mut saved = Vec::new();
+    let mut rest = html;
+
+    while let Some(pos) = rest.find("data:image/") {
+        out.push_str(&rest[..pos]);
+        let candidate = &rest[pos..];
+        let end = candidate
+            .find(['"', '\'', ')', '>', '<', ' ', '\n', '\r', '\t'])
+            .unwrap_or(candidate.len());
+        let uri = &candidate[..end];
+        if uri.contains(";base64,") && uri.len() > 256 {
+            let idx = saved.len();
+            saved.push(uri.to_string());
+            out.push_str(&format!("__DF_DATA_IMG_{idx}__"));
+        } else {
+            out.push_str(uri);
+        }
+        rest = &candidate[end..];
+    }
+    out.push_str(rest);
+    (out, saved)
+}
+
+pub fn restore_data_urls(html: &str, saved: &[String]) -> String {
+    let mut out = html.to_string();
+    for (idx, uri) in saved.iter().enumerate() {
+        let token = format!("__DF_DATA_IMG_{idx}__");
+        out = out.replace(&token, uri);
+    }
+    out
+}
+
+/// Iteratively refine an existing HTML document according to a follow-up user chat instruction.
+pub async fn refine_html(
+    settings: &Settings,
+    current_html: &str,
+    prior_requests: &[String],
+    instruction: &str,
+) -> Result<String> {
+    if instruction.trim().is_empty() {
+        bail!("refinement instruction cannot be empty");
+    }
+    if current_html.trim().is_empty() {
+        bail!("no HTML document available to refine");
+    }
+    let (compact_html, saved_urls) = protect_data_urls(current_html);
+    let prompt = build_refinement_prompt(&compact_html, prior_requests, instruction);
+    let refined = send_chat(settings, &prompt, Vec::new()).await?;
+    Ok(restore_data_urls(&refined, &saved_urls))
 }
 
 /// List models installed in Ollama (used by the settings page).
@@ -273,4 +357,48 @@ pub fn clean_html(raw: &str) -> String {
 </body>
 </html>"#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_html_strips_markdown_fences_and_chatter() {
+        let raw = "Sure! Here is the document:\n```html\n<!DOCTYPE html><html><body>Hi</body></html>\n```\nHope this helps.";
+        assert_eq!(clean_html(raw), "<!DOCTYPE html><html><body>Hi</body></html>");
+    }
+
+    #[test]
+    fn build_refinement_prompt_includes_prior_turns_and_current_html() {
+        let prompt = build_refinement_prompt(
+            "<!DOCTYPE html><html><body><h1>Invoice</h1></body></html>",
+            &["Make header green".into()],
+            "Add a 10% tax row",
+        );
+        assert!(prompt.contains("1. Make header green"));
+        assert!(prompt.contains("<h1>Invoice</h1>"));
+        assert!(prompt.contains("Add a 10% tax row"));
+    }
+
+    #[test]
+    fn model_in_list_matches_implicit_latest_tag() {
+        let list = vec!["qwen2.5vl:3b".into(), "llama3:latest".into()];
+        assert!(model_in_list(&list, "qwen2.5vl:3b"));
+        assert!(model_in_list(&list, "llama3"));
+        assert!(!model_in_list(&list, "gemma3"));
+    }
+
+    #[test]
+    fn protect_and_restore_data_urls_preserves_embedded_images() {
+        let big_b64 = "A".repeat(400);
+        let html = format!(
+            "<!DOCTYPE html><html><body><img src=\"data:image/png;base64,{big_b64}\" alt=\"Logo\"><p>Hi</p></body></html>"
+        );
+        let (compact, saved) = protect_data_urls(&html);
+        assert_eq!(saved.len(), 1);
+        assert!(compact.contains("__DF_DATA_IMG_0__"));
+        assert!(!compact.contains(&big_b64));
+        assert_eq!(restore_data_urls(&compact, &saved), html);
+    }
 }

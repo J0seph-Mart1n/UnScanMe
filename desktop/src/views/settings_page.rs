@@ -41,7 +41,7 @@ async fn check_connection(
 pub fn SettingsPage() -> Element {
     let mut saved = use_context::<Signal<Settings>>();
     // Edit a local copy; only commit on "Save".
-    let mut draft = use_signal(|| saved());
+    let mut draft = use_signal(|| saved.read().clone());
     let mut banner = use_signal(|| None::<SettingsBanner>);
     let mut models = use_signal(Vec::<String>::new);
     let mut connected = use_signal(|| false);

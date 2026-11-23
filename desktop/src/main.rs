@@ -9,9 +9,13 @@ use dioxus::prelude::*;
 use settings::Settings;
 use views::{Convert, ConvertState, Navbar, SettingsPage};
 
+mod clipboard;
 mod editor;
+mod image_ops;
 mod ollama;
+mod page_setup;
 mod pdf;
+mod pdf_import;
 mod settings;
 mod views;
 

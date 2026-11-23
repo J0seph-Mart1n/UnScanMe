@@ -3,6 +3,7 @@
 use crate::{
     editor::{
         self, EditorCommand, EditorEvent, FormatCommand, LayerDirection, SelectionInfo, ShapeKind,
+        TableActionKind,
     },
     views::convert::Status,
 };
@@ -34,7 +35,9 @@ pub fn VisualEditor(
     let mut can_undo = use_signal(|| false);
     let mut can_redo = use_signal(|| false);
     let mut shapes_open = use_signal(|| false);
+    let mut table_menu_open = use_signal(|| false);
     let mut last_synced_html = use_signal(String::new);
+    let mut ready = use_signal(|| false);
 
     // Mount the JS canvas controller once and listen for editor events.
     use_effect(move || {
@@ -54,6 +57,7 @@ pub fn VisualEditor(
                     EditorEvent::Ready => {
                         let current = html.peek().clone();
                         last_synced_html.set(current.clone());
+                        ready.set(true);
                         let _ = eval.send(EditorCommand::LoadHtml { html: current });
                     }
                     EditorEvent::HtmlChanged {
@@ -83,6 +87,9 @@ pub fn VisualEditor(
     // Reload the canvas only when `html` changes externally (AI generation, HTML source edit, clear).
     use_effect(move || {
         let current = html();
+        if !ready() {
+            return;
+        }
         if current != *last_synced_html.peek() {
             if let Some(ev) = *eval_handle.peek() {
                 last_synced_html.set(current.clone());
@@ -136,6 +143,7 @@ pub fn VisualEditor(
                     title: "Add editable text box",
                     onclick: move |_| {
                         shapes_open.set(false);
+                        table_menu_open.set(false);
                         send_cmd(eval_handle, EditorCommand::InsertText);
                     },
                     "T+ Text"
@@ -148,7 +156,10 @@ pub fn VisualEditor(
                         title: "Insert shape",
                         aria_haspopup: "menu",
                         aria_expanded: "{shapes_open()}",
-                        onclick: move |_| shapes_open.toggle(),
+                        onclick: move |_| {
+                            table_menu_open.set(false);
+                            shapes_open.toggle();
+                        },
                         "Shapes ▾"
                     }
                     if shapes_open() && !busy {
@@ -203,6 +214,46 @@ pub fn VisualEditor(
                     title: "Insert image from disk",
                     onclick: insert_image,
                     "Image"
+                }
+
+                div { class: "shape-dropdown",
+                    button {
+                        class: "btn-small",
+                        disabled: busy,
+                        title: "Insert editable table",
+                        aria_haspopup: "menu",
+                        aria_expanded: "{table_menu_open()}",
+                        onclick: move |_| {
+                            shapes_open.set(false);
+                            table_menu_open.toggle();
+                        },
+                        "Table ▾"
+                    }
+                    if table_menu_open() && !busy {
+                        div {
+                            class: "mode-backdrop",
+                            onclick: move |_| table_menu_open.set(false),
+                        }
+                        div { class: "shape-menu", role: "menu", aria_label: "Insert table",
+                            for (rows, cols, label) in [
+                                (2u32, 2u32, "2 × 2 Table"),
+                                (3, 3, "3 × 3 Table"),
+                                (4, 4, "4 × 4 Table"),
+                                (5, 3, "5 × 3 Invoice"),
+                                (6, 4, "6 × 4 Grid"),
+                            ] {
+                                button {
+                                    class: "mode-option",
+                                    role: "menuitem",
+                                    onclick: move |_| {
+                                        table_menu_open.set(false);
+                                        send_cmd(eval_handle, EditorCommand::InsertTable { rows, cols });
+                                    },
+                                    "{label}"
+                                }
+                            }
+                        }
+                    }
                 }
 
                 span { class: "editor-sep", aria_hidden: "true" }
@@ -385,7 +436,7 @@ pub fn VisualEditor(
                             class: "prop-color",
                             r#type: "color",
                             disabled: busy,
-                            value: "{color_input_val(&info.border_color, \"#3b6ef5\")}",
+                            value: "{color_input_val(&info.border_color, \"#16a34a\")}",
                             oninput: move |e| send_cmd(eval_handle, EditorCommand::SetStyle {
                                 prop: "border_color".into(),
                                 value: e.value(),
@@ -450,9 +501,83 @@ pub fn VisualEditor(
                         }
                     }
                 }
+                if info.in_table {
+                    div { class: "editor-props editor-table-bar", role: "toolbar", aria_label: "Table editor tools",
+                        span { class: "prop-badge",
+                            if info.cell_row > 0 && info.cell_col > 0 {
+                                "Table {info.table_rows}×{info.table_cols} · R{info.cell_row} C{info.cell_col}"
+                            } else {
+                                "Table {info.table_rows}×{info.table_cols}"
+                            }
+                        }
+                        div { class: "prop-group",
+                            button {
+                                class: "btn-small",
+                                disabled: busy,
+                                title: "Insert row above",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::InsertRowAbove }),
+                                "+ Row ↑"
+                            }
+                            button {
+                                class: "btn-small",
+                                disabled: busy,
+                                title: "Insert row below",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::InsertRowBelow }),
+                                "+ Row ↓"
+                            }
+                            button {
+                                class: "btn-small btn-danger",
+                                disabled: busy || info.table_rows <= 1,
+                                title: "Delete current row",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::DeleteRow }),
+                                "- Row"
+                            }
+                        }
+                        div { class: "prop-group",
+                            button {
+                                class: "btn-small",
+                                disabled: busy,
+                                title: "Insert column left",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::InsertColLeft }),
+                                "+ Col ←"
+                            }
+                            button {
+                                class: "btn-small",
+                                disabled: busy,
+                                title: "Insert column right",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::InsertColRight }),
+                                "+ Col →"
+                            }
+                            button {
+                                class: "btn-small btn-danger",
+                                disabled: busy || info.table_cols <= 1,
+                                title: "Delete current column",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::DeleteCol }),
+                                "- Col"
+                            }
+                        }
+                        if info.cell_row > 0 {
+                            button {
+                                class: if info.is_header_cell { "btn-small active" } else { "btn-small" },
+                                disabled: busy,
+                                title: "Toggle header cell (th / td)",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::ToggleHeader }),
+                                "Header"
+                            }
+                            button {
+                                class: "btn-small",
+                                disabled: busy,
+                                title: "Select whole table (move / resize / delete)",
+                                onclick: move |_| send_cmd(eval_handle, EditorCommand::TableAction { action: TableActionKind::SelectTable }),
+                                "Select Table"
+                            }
+                        }
+                        span { class: "muted", style: "font-size: 11px;", "Tip: Double-click cell to edit, Tab for next cell" }
+                    }
+                }
             } else {
                 div { class: "editor-hint",
-                    "Click any element to move or resize · Double-click text to edit inline · Use the toolbar to insert text, shapes, or images"
+                    "Click any element or table cell to edit · Double-click text to edit inline · Use the toolbar to insert text, shapes, images, or tables"
                 }
             }
 

@@ -1,14 +1,20 @@
-//! Main workbench: Image-to-PDF or Prompt-to-PDF -> Visual Edit / HTML -> Export PDF.
+//! Main workbench: Image / Prompt / PDF -> HTML -> Visual Edit / Table / Refine AI -> Export PDF.
 
 use crate::{
+    clipboard,
     editor,
+    image_ops,
     ollama::{self, PullUpdate},
+    page_setup::{self, Orientation, PageSetup, PaperSize},
     pdf,
+    pdf_import::{self, LoadedPdf},
     settings::Settings,
     views::VisualEditor,
 };
 use base64::Engine;
+use dioxus::html::HasFileData;
 use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Clone, PartialEq)]
@@ -23,17 +29,22 @@ pub enum Status {
 
 #[derive(Clone, PartialEq)]
 pub struct LoadedImage {
-    path: PathBuf,
-    /// Original file bytes.
-    bytes: Vec<u8>,
+    pub path: PathBuf,
+    /// Original unedited file bytes so Crop / Rotate / Deskew can be reset.
+    pub original_bytes: Vec<u8>,
+    /// Current working image bytes.
+    pub bytes: Vec<u8>,
     /// `data:` URL used for the on-screen preview.
-    preview: String,
+    pub preview: String,
+    /// Whether any crop / rotate / deskew edit has been applied.
+    pub modified: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
     ImageToPdf,
     PromptToPdf,
+    PdfToHtml,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -43,16 +54,47 @@ pub enum Tab {
     Source,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct ChatTurn {
+    pub role: ChatRole,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WorkbenchJsEvent {
+    PastedDataUrl { data_url: String },
+    CheckOsClipboard,
+    CropRect { x: f32, y: f32, w: f32, h: f32 },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WorkbenchJsCmd {
+    Shutdown,
+}
+
 /// Shared converter state kept at the app root so navigating away doesn't clear it.
 #[derive(Clone, Copy)]
 pub struct ConvertState {
     pub mode: Signal<Mode>,
     pub image: Signal<Option<LoadedImage>>,
+    pub pdf: Signal<Option<LoadedPdf>>,
     pub extra_prompt: Signal<String>,
     pub doc_prompt: Signal<String>,
     pub html: Signal<String>,
     pub status: Signal<Status>,
     pub tab: Signal<Tab>,
+    pub page_setup: Signal<PageSetup>,
+    pub chat_history: Signal<Vec<ChatTurn>>,
+    pub refine_input: Signal<String>,
+    pub refine_open: Signal<bool>,
 }
 
 impl ConvertState {
@@ -60,22 +102,205 @@ impl ConvertState {
         Self {
             mode: Signal::new(Mode::ImageToPdf),
             image: Signal::new(None),
+            pdf: Signal::new(None),
             extra_prompt: Signal::new(String::new()),
             doc_prompt: Signal::new(String::new()),
             html: Signal::new(String::new()),
             status: Signal::new(Status::Idle),
             tab: Signal::new(Tab::Preview),
+            page_setup: Signal::new(PageSetup::default()),
+            chat_history: Signal::new(Vec::new()),
+            refine_input: Signal::new(String::new()),
+            refine_open: Signal::new(false),
         }
     }
 }
 
-async fn convert_loaded_image(
+const WORKBENCH_JS: &str = r##"
+(function () {
+  if (window.__dfWorkbenchCleanup) {
+    try { window.__dfWorkbenchCleanup(); } catch (_) {}
+  }
+
+  let activeChannel = null;
+  let cropDrag = null;
+  let lastPasteAt = 0;
+  let lastCropEmitAt = 0;
+
+  function isTextTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable) return true;
+    if (el.id === "visual-editor-frame") return true;
+    return false;
+  }
+
+  function sendImageFile(file) {
+    if (!file || !activeChannel) return false;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string" && activeChannel) {
+        try {
+          activeChannel.send({ type: "pasted_data_url", data_url: reader.result });
+        } catch (_) {}
+      }
+    };
+    reader.readAsDataURL(file);
+    return true;
+  }
+
+  function onPaste(e) {
+    if (!activeChannel) return;
+    lastPasteAt = Date.now();
+    const items = e.clipboardData && e.clipboardData.items;
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.type && it.type.startsWith("image/")) {
+          const file = it.getAsFile();
+          if (file) {
+            e.preventDefault();
+            sendImageFile(file);
+            return;
+          }
+        }
+      }
+    }
+    const files = e.clipboardData && e.clipboardData.files;
+    if (files) {
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        if (f && (!f.type || f.type.startsWith("image/"))) {
+          e.preventDefault();
+          sendImageFile(f);
+          return;
+        }
+      }
+    }
+    if (!isTextTarget(document.activeElement)) {
+      try {
+        activeChannel.send({ type: "check_os_clipboard" });
+      } catch (_) {}
+    }
+  }
+
+  function onKeyDown(e) {
+    if (!activeChannel) return;
+    if ((e.ctrlKey || e.metaKey) && e.key && e.key.toLowerCase() === "v") {
+      if (!isTextTarget(document.activeElement)) {
+        setTimeout(() => {
+          if (Date.now() - lastPasteAt > 120 && activeChannel) {
+            try {
+              activeChannel.send({ type: "check_os_clipboard" });
+            } catch (_) {}
+          }
+        }, 80);
+      }
+    }
+  }
+
+  function clamp01(v) {
+    return Math.max(0, Math.min(1, v));
+  }
+
+  function computeCropRect(stage, startPt, curPt) {
+    const rect = stage.getBoundingClientRect();
+    if (rect.width < 4 || rect.height < 4) return null;
+    const x1 = clamp01((Math.min(startPt.x, curPt.x) - rect.left) / rect.width);
+    const y1 = clamp01((Math.min(startPt.y, curPt.y) - rect.top) / rect.height);
+    const x2 = clamp01((Math.max(startPt.x, curPt.x) - rect.left) / rect.width);
+    const y2 = clamp01((Math.max(startPt.y, curPt.y) - rect.top) / rect.height);
+    const w = Math.max(0.02, x2 - x1);
+    const h = Math.max(0.02, y2 - y1);
+    return {
+      x: Math.min(x1, 1 - w),
+      y: Math.min(y1, 1 - h),
+      w,
+      h,
+    };
+  }
+
+  function previewCropDom(stage, cr) {
+    const box = stage.querySelector(".crop-box");
+    if (!box || !cr) return;
+    box.style.left = `${cr.x * 100}%`;
+    box.style.top = `${cr.y * 100}%`;
+    box.style.width = `${cr.w * 100}%`;
+    box.style.height = `${cr.h * 100}%`;
+    const badge = box.querySelector(".crop-badge");
+    if (badge) {
+      badge.textContent = `${Math.round(cr.w * 100)}% × ${Math.round(cr.h * 100)}%`;
+    }
+  }
+
+  function emitCropFromEvent(stage, startPt, curPt, forceIpc) {
+    const cr = computeCropRect(stage, startPt, curPt);
+    if (!cr) return;
+    previewCropDom(stage, cr);
+    const now = Date.now();
+    if (activeChannel && (forceIpc || now - lastCropEmitAt >= 80)) {
+      lastCropEmitAt = now;
+      try {
+        activeChannel.send({ type: "crop_rect", ...cr });
+      } catch (_) {}
+    }
+  }
+
+  function onMouseDown(e) {
+    const stage = e.target && e.target.closest ? e.target.closest("#df-crop-stage") : null;
+    if (!stage || e.button !== 0) return;
+    e.preventDefault();
+    cropDrag = { stage, start: { x: e.clientX, y: e.clientY } };
+  }
+
+  function onMouseMove(e) {
+    if (!cropDrag) return;
+    emitCropFromEvent(cropDrag.stage, cropDrag.start, { x: e.clientX, y: e.clientY }, false);
+  }
+
+  function onMouseUp(e) {
+    if (!cropDrag) return;
+    const dx = Math.abs(e.clientX - cropDrag.start.x);
+    const dy = Math.abs(e.clientY - cropDrag.start.y);
+    if (dx >= 4 || dy >= 4) {
+      emitCropFromEvent(cropDrag.stage, cropDrag.start, { x: e.clientX, y: e.clientY }, true);
+    }
+    cropDrag = null;
+  }
+
+  window.addEventListener("paste", onPaste, true);
+  window.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("mousedown", onMouseDown, true);
+  window.addEventListener("mousemove", onMouseMove, true);
+  window.addEventListener("mouseup", onMouseUp, true);
+
+  window.__dfWorkbenchCleanup = function () {
+    window.removeEventListener("paste", onPaste, true);
+    window.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("mousedown", onMouseDown, true);
+    window.removeEventListener("mousemove", onMouseMove, true);
+    window.removeEventListener("mouseup", onMouseUp, true);
+    activeChannel = null;
+  };
+
+  window.__dfStartWorkbench = async function (dioxusChannel) {
+    activeChannel = dioxusChannel;
+    while (true) {
+      const cmd = await dioxusChannel.recv();
+      if (!cmd || cmd.type === "shutdown") break;
+    }
+    if (window.__dfWorkbenchCleanup) {
+      window.__dfWorkbenchCleanup();
+    }
+  };
+})();
+"##;
+
+async fn convert_image_bytes(
     mut cfg: Settings,
     extra_prompt: String,
-    img: LoadedImage,
-    mut html: Signal<String>,
-    mut tab: Signal<Tab>,
-    mut status: Signal<Status>,
+    bytes: Vec<u8>,
+    mut state: ConvertState,
 ) {
     let extra = extra_prompt.trim();
     if !extra.is_empty() {
@@ -86,47 +311,49 @@ async fn convert_loaded_image(
         );
     }
 
-    status.set(Status::Busy(format!(
+    state.status.set(Status::Busy(format!(
         "Running {} locally… this can take a few minutes.",
         cfg.model
     )));
 
     let max_dim = cfg.max_image_dim;
     let prepared =
-        tokio::task::spawn_blocking(move || ollama::prepare_image(&img.bytes, max_dim)).await;
+        tokio::task::spawn_blocking(move || ollama::prepare_image(&bytes, max_dim)).await;
     let png = match prepared {
         Ok(Ok(png)) => png,
-        Ok(Err(e)) => return status.set(Status::Error(format!("{e:#}"))),
-        Err(e) => return status.set(Status::Error(e.to_string())),
+        Ok(Err(e)) => return state.status.set(Status::Error(format!("{e:#}"))),
+        Err(e) => return state.status.set(Status::Error(e.to_string())),
     };
 
     match ollama::image_to_html(&cfg, &png).await {
         Ok(result) => {
-            html.set(result);
-            tab.set(Tab::Preview);
-            status.set(Status::Ok("HTML generated. Review or edit it, then export to PDF.".into()));
+            let setup = (state.page_setup)();
+            state.html.set(page_setup::apply_page_setup(&result, &setup));
+            state.chat_history.set(Vec::new());
+            state.tab.set(Tab::Preview);
+            state.status.set(Status::Ok(
+                "HTML generated. Review, edit, or refine with AI, then export to PDF.".into(),
+            ));
         }
-        Err(e) => status.set(Status::Error(format!("{e:#}"))),
+        Err(e) => state.status.set(Status::Error(format!("{e:#}"))),
     }
 }
 
-async fn generate_from_prompt(
-    cfg: Settings,
-    user_prompt: String,
-    mut html: Signal<String>,
-    mut tab: Signal<Tab>,
-    mut status: Signal<Status>,
-) {
-    status.set(Status::Busy(format!("Generating document with {}…", cfg.model)));
+async fn generate_from_prompt(cfg: Settings, user_prompt: String, mut state: ConvertState) {
+    state
+        .status
+        .set(Status::Busy(format!("Generating document with {}…", cfg.model)));
     match ollama::prompt_to_html(&cfg, &user_prompt).await {
         Ok(result) => {
-            html.set(result);
-            tab.set(Tab::Preview);
-            status.set(Status::Ok(
-                "Document generated. Review or edit the HTML, then export to PDF.".into(),
+            let setup = (state.page_setup)();
+            state.html.set(page_setup::apply_page_setup(&result, &setup));
+            state.chat_history.set(Vec::new());
+            state.tab.set(Tab::Preview);
+            state.status.set(Status::Ok(
+                "Document generated. Review, edit, or refine with AI, then export to PDF.".into(),
             ));
         }
-        Err(e) => status.set(Status::Error(format!("{e:#}"))),
+        Err(e) => state.status.set(Status::Error(format!("{e:#}"))),
     }
 }
 
@@ -145,29 +372,202 @@ async fn ensure_model_ready(cfg: &Settings, mut status: Signal<Status>) -> bool 
     }
 }
 
+fn make_loaded_image(path: PathBuf, bytes: Vec<u8>) -> LoadedImage {
+    let preview = format!(
+        "data:{};base64,{}",
+        editor::mime_for(&path),
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    );
+    LoadedImage {
+        path,
+        original_bytes: bytes.clone(),
+        bytes,
+        preview,
+        modified: false,
+    }
+}
+
+fn update_loaded_image_bytes(img: &LoadedImage, new_png: Vec<u8>, modified: bool) -> LoadedImage {
+    let preview = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&new_png)
+    );
+    LoadedImage {
+        path: img.path.clone(),
+        original_bytes: img.original_bytes.clone(),
+        bytes: new_png,
+        preview,
+        modified,
+    }
+}
+
+async fn run_pick_image(
+    mut state: ConvertState,
+    mut crop_mode: Signal<bool>,
+    mut straighten_deg: Signal<f32>,
+) {
+    let Some(file) = rfd::AsyncFileDialog::new()
+        .set_title("Choose a document image")
+        .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"])
+        .pick_file()
+        .await
+    else {
+        return;
+    };
+    let path = file.path().to_path_buf();
+    let bytes = file.read().await;
+    let loaded = make_loaded_image(path, bytes);
+    state.mode.set(Mode::ImageToPdf);
+    crop_mode.set(false);
+    straighten_deg.set(0.0);
+    state.image.set(Some(loaded));
+    state.html.set(String::new());
+    state.chat_history.set(Vec::new());
+    state.refine_open.set(false);
+    state.tab.set(Tab::Preview);
+    if !matches!(*state.status.peek(), Status::MissingModel(_)) {
+        state.status.set(Status::Idle);
+    }
+}
+
+async fn run_paste_clipboard(
+    mut state: ConvertState,
+    mut crop_mode: Signal<bool>,
+    mut straighten_deg: Signal<f32>,
+) {
+    state.status.set(Status::Busy("Reading image from clipboard…".into()));
+    match clipboard::read_os_clipboard_image().await {
+        Ok(raw) => match clipboard::normalize_clipboard_image(&raw) {
+            Ok((png, preview)) => {
+                state.mode.set(Mode::ImageToPdf);
+                crop_mode.set(false);
+                straighten_deg.set(0.0);
+                state.image.set(Some(LoadedImage {
+                    path: PathBuf::from("clipboard.png"),
+                    original_bytes: png.clone(),
+                    bytes: png,
+                    preview,
+                    modified: false,
+                }));
+                state.html.set(String::new());
+                state.chat_history.set(Vec::new());
+                state.refine_open.set(false);
+                state.tab.set(Tab::Preview);
+                state.status.set(Status::Ok("Loaded image from clipboard.".into()));
+            }
+            Err(e) => state.status.set(Status::Error(format!("{e:#}"))),
+        },
+        Err(e) => state.status.set(Status::Error(format!("{e:#}"))),
+    }
+}
+
 #[component]
 pub fn Convert() -> Element {
     let settings = use_context::<Signal<Settings>>();
     let state = use_context::<ConvertState>();
     let mut mode = state.mode;
     let mut image = state.image;
+    let mut pdf_doc = state.pdf;
     let mut extra_prompt = state.extra_prompt;
     let mut doc_prompt = state.doc_prompt;
     let mut html = state.html;
     let mut status = state.status;
     let mut tab = state.tab;
+    let page_setup = state.page_setup;
+    let mut chat_history = state.chat_history;
+    let mut refine_input = state.refine_input;
+    let mut refine_open = state.refine_open;
+
     let mut mode_menu_open = use_signal(|| false);
+    let mut page_menu_open = use_signal(|| false);
+    let mut drag_active = use_signal(|| false);
+    let mut crop_mode = use_signal(|| false);
+    let mut crop_rect = use_signal(|| (0.08f32, 0.08f32, 0.84f32, 0.84f32));
+    let mut straighten_deg = use_signal(|| 0.0f32);
+    let mut workbench_eval = use_signal(|| None::<document::Eval>);
 
     let busy = matches!(status(), Status::Busy(_) | Status::Downloading(_));
     let has_image = image.read().is_some();
+    let has_pdf = pdf_doc.read().is_some();
     let has_doc_prompt = !doc_prompt.read().trim().is_empty();
     let has_html = !html.read().trim().is_empty();
 
-    // Reset transient Busy/Downloading status if the user navigates away mid-task.
+    // Reset transient Busy/Downloading status and clean up JS listeners on unmount.
     use_drop(move || {
         if matches!(*status.peek(), Status::Busy(_) | Status::Downloading(_)) {
             status.set(Status::Idle);
         }
+        if let Some(ev) = *workbench_eval.peek() {
+            let _ = ev.send(WorkbenchJsCmd::Shutdown);
+        }
+    });
+
+    // Mount global clipboard paste & drag-crop pointer controller once.
+    use_effect(move || {
+        if workbench_eval.peek().is_some() {
+            return;
+        }
+        let script = format!("{WORKBENCH_JS}\nawait window.__dfStartWorkbench(dioxus);");
+        let mut eval = document::eval(&script);
+        workbench_eval.set(Some(eval));
+
+        spawn(async move {
+            while let Ok(evt) = eval.recv::<WorkbenchJsEvent>().await {
+                match evt {
+                    WorkbenchJsEvent::PastedDataUrl { data_url } => {
+                        match clipboard::decode_base64_image(&data_url) {
+                            Ok((png, preview)) => {
+                                mode.set(Mode::ImageToPdf);
+                                crop_mode.set(false);
+                                crop_rect.set((0.08, 0.08, 0.84, 0.84));
+                                straighten_deg.set(0.0);
+                                image.set(Some(LoadedImage {
+                                    path: PathBuf::from("clipboard.png"),
+                                    original_bytes: png.clone(),
+                                    bytes: png,
+                                    preview,
+                                    modified: false,
+                                }));
+                                html.set(String::new());
+                                chat_history.set(Vec::new());
+                                refine_open.set(false);
+                                tab.set(Tab::Preview);
+                                status.set(Status::Ok("Pasted image from clipboard.".into()));
+                            }
+                            Err(e) => status.set(Status::Error(format!("{e:#}"))),
+                        }
+                    }
+                    WorkbenchJsEvent::CheckOsClipboard => {
+                        if let Ok(raw) = clipboard::read_os_clipboard_image().await {
+                            match clipboard::normalize_clipboard_image(&raw) {
+                                Ok((png, preview)) => {
+                                    mode.set(Mode::ImageToPdf);
+                                    crop_mode.set(false);
+                                    crop_rect.set((0.08, 0.08, 0.84, 0.84));
+                                    straighten_deg.set(0.0);
+                                    image.set(Some(LoadedImage {
+                                        path: PathBuf::from("clipboard.png"),
+                                        original_bytes: png.clone(),
+                                        bytes: png,
+                                        preview,
+                                        modified: false,
+                                    }));
+                                    html.set(String::new());
+                                    chat_history.set(Vec::new());
+                                    refine_open.set(false);
+                                    tab.set(Tab::Preview);
+                                    status.set(Status::Ok("Pasted image from clipboard.".into()));
+                                }
+                                Err(e) => status.set(Status::Error(format!("{e:#}"))),
+                            }
+                        }
+                    }
+                    WorkbenchJsEvent::CropRect { x, y, w, h } => {
+                        crop_rect.set((x, y, w, h));
+                    }
+                }
+            }
+        });
     });
 
     // Proactively check whether the configured model is installed in Ollama.
@@ -190,31 +590,242 @@ pub fn Convert() -> Element {
         });
     });
 
+    // --- Shared Loaders ----------------------------------------------------
+
+    let load_image_from_bytes = move |path: PathBuf, bytes: Vec<u8>| {
+        let mut mode = mode;
+        let mut crop_mode = crop_mode;
+        let mut straighten_deg = straighten_deg;
+        let mut image = image;
+        let mut html = html;
+        let mut chat_history = chat_history;
+        let mut refine_open = refine_open;
+        let mut tab = tab;
+        let mut status = status;
+        let loaded = make_loaded_image(path, bytes);
+        mode.set(Mode::ImageToPdf);
+        crop_mode.set(false);
+        straighten_deg.set(0.0);
+        image.set(Some(loaded));
+        html.set(String::new());
+        chat_history.set(Vec::new());
+        refine_open.set(false);
+        tab.set(Tab::Preview);
+        if !matches!(status(), Status::MissingModel(_)) {
+            status.set(Status::Idle);
+        }
+    };
+
+    let load_pdf_from_path = move |path: PathBuf, display_name: Option<PathBuf>| async move {
+        status.set(Status::Busy("Importing PDF pages and extracting layout…".into()));
+        match pdf_import::import_pdf(&path).await {
+            Ok(mut loaded) => {
+                if let Some(disp) = display_name {
+                    loaded.path = disp;
+                }
+                let n = loaded.page_count();
+                mode.set(Mode::PdfToHtml);
+                pdf_doc.set(Some(loaded));
+                html.set(String::new());
+                chat_history.set(Vec::new());
+                refine_open.set(false);
+                tab.set(Tab::Preview);
+                status.set(Status::Ok(format!(
+                    "Loaded PDF ({n} page{}). Click Quick Extract HTML or Convert Page (AI).",
+                    if n == 1 { "" } else { "s" }
+                )));
+            }
+            Err(e) => status.set(Status::Error(format!("{e:#}"))),
+        }
+    };
+
     // --- Actions -----------------------------------------------------------
 
-    let pick_image = move |_| async move {
+    let pick_image = move |_| run_pick_image(state, crop_mode, straighten_deg);
+
+    let pick_pdf = move |_| async move {
         let Some(file) = rfd::AsyncFileDialog::new()
-            .set_title("Choose a document image")
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"])
+            .set_title("Import a PDF document")
+            .add_filter("PDF Documents", &["pdf"])
             .pick_file()
             .await
         else {
             return;
         };
         let path = file.path().to_path_buf();
-        let bytes = file.read().await;
-        let preview = format!(
-            "data:{};base64,{}",
-            editor::mime_for(&path),
-            base64::engine::general_purpose::STANDARD.encode(&bytes)
-        );
-        image.set(Some(LoadedImage { path, bytes, preview }));
-        html.set(String::new());
-        tab.set(Tab::Preview);
-        if !matches!(status(), Status::MissingModel(_)) {
-            status.set(Status::Idle);
+        load_pdf_from_path(path, None).await;
+    };
+
+    let paste_from_clipboard = move |_| run_paste_clipboard(state, crop_mode, straighten_deg);
+
+    let handle_drop = move |evt: DragEvent| async move {
+        evt.prevent_default();
+        drag_active.set(false);
+        if busy {
+            return;
+        }
+        let files = evt.files();
+        let Some(file) = files.into_iter().next() else {
+            return;
+        };
+        let path = file.path();
+        let name = file.name().to_ascii_lowercase();
+        let bytes = match file.read_bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                status.set(Status::Error(format!("Failed to read dropped file: {e}")));
+                return;
+            }
+        };
+
+        if name.ends_with(".pdf") || bytes.starts_with(b"%PDF-") {
+            if path.is_file() {
+                load_pdf_from_path(path, None).await;
+            } else {
+                // Write dropped PDF bytes to a temp path for Poppler tools
+                let tmp = std::env::temp_dir().join(format!(
+                    "df_drop_{}.pdf",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                ));
+                if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
+                    status.set(Status::Error(format!("Failed to stage dropped PDF: {e}")));
+                    return;
+                }
+                let disp = if path.as_os_str().is_empty() {
+                    Some(PathBuf::from(file.name()))
+                } else {
+                    Some(path)
+                };
+                load_pdf_from_path(tmp.clone(), disp).await;
+                let _ = tokio::fs::remove_file(&tmp).await;
+            }
+            return;
+        }
+
+        match image::load_from_memory(&bytes) {
+            Ok(_) => {
+                let display_path = if path.as_os_str().is_empty() {
+                    PathBuf::from(file.name())
+                } else {
+                    path
+                };
+                load_image_from_bytes(display_path, bytes);
+                status.set(Status::Ok("Loaded dropped image.".into()));
+            }
+            Err(_) => {
+                status.set(Status::Error(
+                    "Unsupported dropped file. Drop a PNG, JPG, WEBP, BMP, GIF, TIFF, or PDF.".into(),
+                ));
+            }
         }
     };
+
+    // --- Image Crop / Rotate / Deskew Actions ------------------------------
+
+    let rotate_cw = move |_| async move {
+        let Some(img) = image() else { return };
+        status.set(Status::Busy("Rotating image 90° clockwise…".into()));
+        let bytes = img.bytes.clone();
+        match tokio::task::spawn_blocking(move || image_ops::rotate_90_cw(&bytes)).await {
+            Ok(Ok(out)) => {
+                image.set(Some(update_loaded_image_bytes(&img, out, true)));
+                crop_mode.set(false);
+                crop_rect.set((0.08, 0.08, 0.84, 0.84));
+                status.set(Status::Ok("Rotated image 90° clockwise.".into()));
+            }
+            Ok(Err(e)) => status.set(Status::Error(format!("{e:#}"))),
+            Err(e) => status.set(Status::Error(e.to_string())),
+        }
+    };
+
+    let rotate_ccw = move |_| async move {
+        let Some(img) = image() else { return };
+        status.set(Status::Busy("Rotating image 90° counter-clockwise…".into()));
+        let bytes = img.bytes.clone();
+        match tokio::task::spawn_blocking(move || image_ops::rotate_90_ccw(&bytes)).await {
+            Ok(Ok(out)) => {
+                image.set(Some(update_loaded_image_bytes(&img, out, true)));
+                crop_mode.set(false);
+                crop_rect.set((0.08, 0.08, 0.84, 0.84));
+                status.set(Status::Ok("Rotated image 90° counter-clockwise.".into()));
+            }
+            Ok(Err(e)) => status.set(Status::Error(format!("{e:#}"))),
+            Err(e) => status.set(Status::Error(e.to_string())),
+        }
+    };
+
+    let auto_deskew = move |_| async move {
+        let Some(img) = image() else { return };
+        status.set(Status::Busy("Detecting skew angle and straightening image…".into()));
+        let bytes = img.bytes.clone();
+        match tokio::task::spawn_blocking(move || image_ops::deskew(&bytes)).await {
+            Ok(Ok((out, angle))) => {
+                if angle.abs() < 0.25 {
+                    status.set(Status::Ok("Image is already straight (no skew detected).".into()));
+                } else {
+                    image.set(Some(update_loaded_image_bytes(&img, out, true)));
+                    crop_mode.set(false);
+                    crop_rect.set((0.08, 0.08, 0.84, 0.84));
+                    status.set(Status::Ok(format!("Auto-deskewed image by {angle:+.1}°.")));
+                }
+            }
+            Ok(Err(e)) => status.set(Status::Error(format!("{e:#}"))),
+            Err(e) => status.set(Status::Error(e.to_string())),
+        }
+    };
+
+    let apply_straighten = move |_| async move {
+        let Some(img) = image() else { return };
+        let deg = straighten_deg();
+        if deg.abs() < 0.1 {
+            return;
+        }
+        status.set(Status::Busy(format!("Rotating image by {deg:+.1}°…")));
+        let bytes = img.bytes.clone();
+        match tokio::task::spawn_blocking(move || image_ops::rotate_angle(&bytes, deg)).await {
+            Ok(Ok(out)) => {
+                image.set(Some(update_loaded_image_bytes(&img, out, true)));
+                straighten_deg.set(0.0);
+                crop_mode.set(false);
+                crop_rect.set((0.08, 0.08, 0.84, 0.84));
+                status.set(Status::Ok(format!("Rotated image by {deg:+.1}°.")));
+            }
+            Ok(Err(e)) => status.set(Status::Error(format!("{e:#}"))),
+            Err(e) => status.set(Status::Error(e.to_string())),
+        }
+    };
+
+    let apply_crop = move |_| async move {
+        let Some(img) = image() else { return };
+        status.set(Status::Busy("Applying crop to source image…".into()));
+        let (x, y, w, h) = crop_rect();
+        let bytes = img.bytes.clone();
+        match tokio::task::spawn_blocking(move || image_ops::crop_normalized(&bytes, x, y, w, h)).await {
+            Ok(Ok(out)) => {
+                image.set(Some(update_loaded_image_bytes(&img, out, true)));
+                crop_mode.set(false);
+                crop_rect.set((0.08, 0.08, 0.84, 0.84));
+                status.set(Status::Ok("Applied crop to source image.".into()));
+            }
+            Ok(Err(e)) => status.set(Status::Error(format!("{e:#}"))),
+            Err(e) => status.set(Status::Error(e.to_string())),
+        }
+    };
+
+    let reset_image_edits = move |_| {
+        if let Some(img) = image() {
+            let restored = make_loaded_image(img.path, img.original_bytes);
+            image.set(Some(restored));
+            crop_mode.set(false);
+            straighten_deg.set(0.0);
+            status.set(Status::Ok("Restored original source image.".into()));
+        }
+    };
+
+    // --- Conversion & AI Actions -------------------------------------------
 
     let run_model = move |_| async move {
         let Some(img) = image() else { return };
@@ -222,7 +833,7 @@ pub fn Convert() -> Element {
         if !ensure_model_ready(&cfg, status).await {
             return;
         }
-        convert_loaded_image(cfg, extra_prompt(), img, html, tab, status).await;
+        convert_image_bytes(cfg, extra_prompt(), img.bytes, state).await;
     };
 
     let run_prompt = move |_| async move {
@@ -234,7 +845,86 @@ pub fn Convert() -> Element {
         if !ensure_model_ready(&cfg, status).await {
             return;
         }
-        generate_from_prompt(cfg, prompt_text, html, tab, status).await;
+        generate_from_prompt(cfg, prompt_text, state).await;
+    };
+
+    let quick_extract_pdf = move |_| {
+        let Some(pdf) = pdf_doc() else { return };
+        let extracted = pdf_import::extract_editable_html(&pdf);
+        let styled = page_setup::apply_page_setup(&extracted, &page_setup());
+        html.set(styled);
+        chat_history.set(Vec::new());
+        tab.set(Tab::Preview);
+        status.set(Status::Ok(
+            "Extracted editable HTML from PDF. Switch to Visual Edit or Refine with AI.".into(),
+        ));
+    };
+
+    let convert_pdf_page_ai = move |_| async move {
+        let Some(pdf) = pdf_doc() else { return };
+        let Some(page) = pdf.current_page().cloned() else {
+            status.set(Status::Error(
+                "No rendered page image available for AI vision conversion. Use Quick Extract HTML instead.".into(),
+            ));
+            return;
+        };
+        let cfg = settings();
+        if !ensure_model_ready(&cfg, status).await {
+            return;
+        }
+        convert_image_bytes(cfg, extra_prompt(), page.png_bytes, state).await;
+    };
+
+    let send_refinement = move |instruction_override: Option<String>| async move {
+        if busy {
+            return;
+        }
+        let instruction = instruction_override.unwrap_or_else(&*refine_input);
+        let trimmed = instruction.trim().to_string();
+        if trimmed.is_empty() || !has_html {
+            return;
+        }
+        let cfg = settings();
+        if !ensure_model_ready(&cfg, status).await {
+            return;
+        }
+
+        let prior: Vec<String> = chat_history
+            .read()
+            .iter()
+            .filter(|t| t.role == ChatRole::User)
+            .map(|t| t.content.clone())
+            .collect();
+
+        chat_history.write().push(ChatTurn {
+            role: ChatRole::User,
+            content: trimmed.clone(),
+        });
+        if refine_input.read().trim() == trimmed {
+            refine_input.set(String::new());
+        }
+
+        status.set(Status::Busy(format!("Refining HTML with {}…", cfg.model)));
+        let current_html = html();
+        match ollama::refine_html(&cfg, &current_html, &prior, &trimmed).await {
+            Ok(updated) => {
+                let final_html = page_setup::apply_page_setup(&updated, &page_setup());
+                let lines = final_html.lines().count();
+                html.set(final_html);
+                chat_history.write().push(ChatTurn {
+                    role: ChatRole::Assistant,
+                    content: format!("Updated document HTML ({lines} lines)."),
+                });
+                status.set(Status::Ok("HTML refined by AI.".into()));
+            }
+            Err(e) => {
+                chat_history.write().push(ChatTurn {
+                    role: ChatRole::Assistant,
+                    content: format!("Error: {e:#}"),
+                });
+                status.set(Status::Error(format!("{e:#}")));
+            }
+        }
     };
 
     let download_missing_model = move |_| async move {
@@ -253,7 +943,7 @@ pub fn Convert() -> Element {
             Ok(()) => match mode() {
                 Mode::ImageToPdf => {
                     if let Some(img) = image() {
-                        convert_loaded_image(cfg, extra_prompt(), img, html, tab, status).await;
+                        convert_image_bytes(cfg, extra_prompt(), img.bytes, state).await;
                     } else {
                         status.set(Status::Ok(format!(
                             "Model `{}` downloaded and ready. Open an image to convert.",
@@ -263,10 +953,20 @@ pub fn Convert() -> Element {
                 }
                 Mode::PromptToPdf => {
                     if !doc_prompt.read().trim().is_empty() {
-                        generate_from_prompt(cfg, doc_prompt(), html, tab, status).await;
+                        generate_from_prompt(cfg, doc_prompt(), state).await;
                     } else {
                         status.set(Status::Ok(format!(
                             "Model `{}` downloaded and ready. Enter a prompt to generate.",
+                            cfg.model
+                        )));
+                    }
+                }
+                Mode::PdfToHtml => {
+                    if let Some(page) = pdf_doc().and_then(|p| p.current_page().cloned()) {
+                        convert_image_bytes(cfg, extra_prompt(), page.png_bytes, state).await;
+                    } else {
+                        status.set(Status::Ok(format!(
+                            "Model `{}` downloaded and ready. Import a PDF to convert.",
                             cfg.model
                         )));
                     }
@@ -276,13 +976,33 @@ pub fn Convert() -> Element {
         }
     };
 
+    let update_page_setup = move |new_setup: PageSetup| {
+        let mut page_setup = page_setup;
+        let mut html = html;
+        page_setup.set(new_setup);
+        let cur = html();
+        if !cur.trim().is_empty() {
+            html.set(page_setup::apply_page_setup(&cur, &new_setup));
+        }
+    };
+
     let default_name = move |ext: &str| {
-        if mode() == Mode::ImageToPdf {
-            if let Some(stem) =
-                image().and_then(|i| i.path.file_stem().map(|s| s.to_string_lossy().into_owned()))
-            {
-                return format!("{stem}.{ext}");
+        match mode() {
+            Mode::ImageToPdf => {
+                if let Some(stem) =
+                    image().and_then(|i| i.path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                {
+                    return format!("{stem}.{ext}");
+                }
             }
+            Mode::PdfToHtml => {
+                if let Some(stem) =
+                    pdf_doc().and_then(|p| p.path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                {
+                    return format!("{stem}_edited.{ext}");
+                }
+            }
+            Mode::PromptToPdf => {}
         }
         format!("document.{ext}")
     };
@@ -300,7 +1020,8 @@ pub fn Convert() -> Element {
         let path = file.path().to_path_buf();
         status.set(Status::Busy("Rendering PDF with Chromium…".into()));
         let chromium = settings.read().chromium_path.clone();
-        match pdf::html_to_pdf(&chromium, &html(), &path).await {
+        let final_html = page_setup::apply_page_setup(&html(), &page_setup());
+        match pdf::html_to_pdf(&chromium, &final_html, &path).await {
             Ok(()) => status.set(Status::Ok(format!("Saved {}", path.display()))),
             Err(e) => status.set(Status::Error(format!("{e:#}"))),
         }
@@ -317,7 +1038,8 @@ pub fn Convert() -> Element {
             return;
         };
         let path = file.path().to_path_buf();
-        match tokio::fs::write(&path, html()).await {
+        let final_html = page_setup::apply_page_setup(&html(), &page_setup());
+        match tokio::fs::write(&path, final_html).await {
             Ok(()) => status.set(Status::Ok(format!("Saved {}", path.display()))),
             Err(e) => status.set(Status::Error(e.to_string())),
         }
@@ -325,6 +1047,15 @@ pub fn Convert() -> Element {
 
     let clear_image = move |_| {
         image.set(None);
+        crop_mode.set(false);
+        straighten_deg.set(0.0);
+        if !matches!(status(), Status::MissingModel(_)) {
+            status.set(Status::Idle);
+        }
+    };
+
+    let clear_pdf = move |_| {
+        pdf_doc.set(None);
         if !matches!(status(), Status::MissingModel(_)) {
             status.set(Status::Idle);
         }
@@ -339,6 +1070,8 @@ pub fn Convert() -> Element {
 
     let clear_output = move |_| {
         html.set(String::new());
+        chat_history.set(Vec::new());
+        refine_open.set(false);
         tab.set(Tab::Preview);
         if !matches!(status(), Status::MissingModel(_)) {
             status.set(Status::Idle);
@@ -347,10 +1080,17 @@ pub fn Convert() -> Element {
 
     let clear_all = move |_| {
         match mode() {
-            Mode::ImageToPdf => image.set(None),
+            Mode::ImageToPdf => {
+                image.set(None);
+                crop_mode.set(false);
+                straighten_deg.set(0.0);
+            }
             Mode::PromptToPdf => doc_prompt.set(String::new()),
+            Mode::PdfToHtml => pdf_doc.set(None),
         }
         html.set(String::new());
+        chat_history.set(Vec::new());
+        refine_open.set(false);
         tab.set(Tab::Preview);
         if !matches!(status(), Status::MissingModel(_)) {
             status.set(Status::Idle);
@@ -358,249 +1098,729 @@ pub fn Convert() -> Element {
     };
 
     let html_line_count = html.read().lines().count();
+    let cur_setup = page_setup();
+    let (cx, cy, cw, ch) = crop_rect();
 
     // --- UI ----------------------------------------------------------------
 
     rsx! {
-        div { class: "toolbar", role: "toolbar", aria_label: "Workbench actions",
-            div { class: "toolbar-group",
-                div { class: "mode-dropdown",
-                    button {
-                        class: "mode-select",
-                        disabled: busy,
-                        aria_haspopup: "listbox",
-                        aria_expanded: "{mode_menu_open()}",
-                        onclick: move |_| mode_menu_open.toggle(),
-                        span {
-                            if mode() == Mode::ImageToPdf {
-                                "Image to PDF"
-                            } else {
-                                "Prompt to PDF"
-                            }
-                        }
-                        span { class: "mode-caret", aria_hidden: "true", "▾" }
-                    }
-                    if mode_menu_open() && !busy {
-                        div {
-                            class: "mode-backdrop",
-                            onclick: move |_| mode_menu_open.set(false),
-                        }
-                        div { class: "mode-menu", role: "listbox", aria_label: "Conversion mode",
-                            button {
-                                class: if mode() == Mode::ImageToPdf { "mode-option active" } else { "mode-option" },
-                                role: "option",
-                                aria_selected: "{mode() == Mode::ImageToPdf}",
-                                onclick: move |_| {
-                                    mode.set(Mode::ImageToPdf);
-                                    mode_menu_open.set(false);
-                                },
-                                span { "Image to PDF" }
-                                if mode() == Mode::ImageToPdf {
-                                    span { class: "mode-check", "✓" }
-                                }
-                            }
-                            button {
-                                class: if mode() == Mode::PromptToPdf { "mode-option active" } else { "mode-option" },
-                                role: "option",
-                                aria_selected: "{mode() == Mode::PromptToPdf}",
-                                onclick: move |_| {
-                                    mode.set(Mode::PromptToPdf);
-                                    mode_menu_open.set(false);
-                                },
-                                span { "Prompt to PDF" }
-                                if mode() == Mode::PromptToPdf {
-                                    span { class: "mode-check", "✓" }
-                                }
-                            }
-                        }
-                    }
+        div {
+            class: "workbench-root",
+            ondragenter: move |evt| {
+                evt.prevent_default();
+                if !busy {
+                    drag_active.set(true);
                 }
+            },
+            ondragover: move |evt| {
+                evt.prevent_default();
+            },
+            ondrop: handle_drop,
 
-                span { class: "toolbar-divider", aria_hidden: "true" }
-
-                if mode() == Mode::ImageToPdf {
-                    button { disabled: busy, onclick: pick_image,
-                        svg {
-                            class: "icon",
-                            view_box: "0 0 24 24",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "1.9",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            path { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }
-                            polyline { points: "17 8 12 3 7 8" }
-                            line { x1: "12", y1: "3", x2: "12", y2: "15" }
+            if drag_active() && !busy {
+                div {
+                    class: "drop-overlay",
+                    ondragover: move |evt| evt.prevent_default(),
+                    ondragleave: move |_| drag_active.set(false),
+                    ondrop: handle_drop,
+                    div { class: "drop-card",
+                        div { class: "empty-icon", aria_hidden: "true",
+                            svg {
+                                width: "22",
+                                height: "22",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "1.9",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                path { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }
+                                polyline { points: "17 8 12 3 7 8" }
+                                line { x1: "12", y1: "3", x2: "12", y2: "15" }
+                            }
                         }
-                        "Open Image"
-                    }
-                    button {
-                        class: "primary",
-                        disabled: busy || !has_image,
-                        onclick: run_model,
-                        svg {
-                            class: "icon",
-                            view_box: "0 0 24 24",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "1.9",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            polygon { points: "13 2 3 14 12 14 11 22 21 10 12 10 13 2" }
-                        }
-                        "Convert to HTML"
-                    }
-                    button {
-                        class: "ghost btn-danger",
-                        disabled: busy || (!has_image && !has_html),
-                        onclick: clear_all,
-                        "Clear all"
-                    }
-                } else {
-                    button {
-                        class: "primary",
-                        disabled: busy || !has_doc_prompt,
-                        onclick: run_prompt,
-                        svg {
-                            class: "icon",
-                            view_box: "0 0 24 24",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "1.9",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            polygon { points: "13 2 3 14 12 14 11 22 21 10 12 10 13 2" }
-                        }
-                        "Generate HTML"
-                    }
-                    button {
-                        class: "ghost btn-danger",
-                        disabled: busy || (!has_doc_prompt && !has_html),
-                        onclick: clear_all,
-                        "Clear all"
+                        span { class: "empty-title", "Drop image or PDF here" }
+                        span { class: "empty-desc", "Supports PNG, JPG, WEBP, TIFF, BMP, or PDF documents" }
                     }
                 }
             }
 
-            div { class: "toolbar-group",
-                button { disabled: busy || !has_html, onclick: save_html, "Save HTML" }
-                button { class: "primary", disabled: busy || !has_html, onclick: export_pdf,
-                    svg {
-                        class: "icon",
-                        view_box: "0 0 24 24",
-                        fill: "none",
-                        stroke: "currentColor",
-                        stroke_width: "1.9",
-                        stroke_linecap: "round",
-                        stroke_linejoin: "round",
-                        path { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }
-                        polyline { points: "14 2 14 8 20 8" }
-                        path { d: "M12 18v-6" }
-                        path { d: "m9 15 3 3 3-3" }
-                    }
-                    "Export PDF"
-                }
-            }
-        }
-
-        if mode() == Mode::ImageToPdf {
-            div { class: "custom-prompt-box",
-                div { class: "custom-prompt-header",
-                    label { r#for: "custom-instructions-input", "Custom instructions" }
-                    span { class: "muted", "(appended to base prompt)" }
-                    span { class: "spacer" }
-                    if !extra_prompt.read().is_empty() {
+            div { class: "toolbar", role: "toolbar", aria_label: "Workbench actions",
+                div { class: "toolbar-group",
+                    div { class: "mode-dropdown",
                         button {
-                            class: "btn-small ghost",
+                            class: "mode-select",
                             disabled: busy,
-                            onclick: move |_| extra_prompt.set(String::new()),
-                            "Clear"
+                            aria_haspopup: "listbox",
+                            aria_expanded: "{mode_menu_open()}",
+                            onclick: move |_| {
+                                page_menu_open.set(false);
+                                mode_menu_open.toggle();
+                            },
+                            span {
+                                match mode() {
+                                    Mode::ImageToPdf => "Image to PDF",
+                                    Mode::PromptToPdf => "Prompt to PDF",
+                                    Mode::PdfToHtml => "PDF to Editable HTML",
+                                }
+                            }
+                            span { class: "mode-caret", aria_hidden: "true", "▾" }
+                        }
+                        if mode_menu_open() && !busy {
+                            div {
+                                class: "mode-backdrop",
+                                onclick: move |_| mode_menu_open.set(false),
+                            }
+                            div { class: "mode-menu", role: "listbox", aria_label: "Conversion mode",
+                                button {
+                                    class: if mode() == Mode::ImageToPdf { "mode-option active" } else { "mode-option" },
+                                    role: "option",
+                                    aria_selected: "{mode() == Mode::ImageToPdf}",
+                                    onclick: move |_| {
+                                        mode.set(Mode::ImageToPdf);
+                                        mode_menu_open.set(false);
+                                    },
+                                    span { "Image to PDF" }
+                                    if mode() == Mode::ImageToPdf {
+                                        span { class: "mode-check", "✓" }
+                                    }
+                                }
+                                button {
+                                    class: if mode() == Mode::PromptToPdf { "mode-option active" } else { "mode-option" },
+                                    role: "option",
+                                    aria_selected: "{mode() == Mode::PromptToPdf}",
+                                    onclick: move |_| {
+                                        mode.set(Mode::PromptToPdf);
+                                        mode_menu_open.set(false);
+                                    },
+                                    span { "Prompt to PDF" }
+                                    if mode() == Mode::PromptToPdf {
+                                        span { class: "mode-check", "✓" }
+                                    }
+                                }
+                                button {
+                                    class: if mode() == Mode::PdfToHtml { "mode-option active" } else { "mode-option" },
+                                    role: "option",
+                                    aria_selected: "{mode() == Mode::PdfToHtml}",
+                                    onclick: move |_| {
+                                        mode.set(Mode::PdfToHtml);
+                                        mode_menu_open.set(false);
+                                    },
+                                    span { "PDF to Editable HTML" }
+                                    if mode() == Mode::PdfToHtml {
+                                        span { class: "mode-check", "✓" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    span { class: "toolbar-divider", aria_hidden: "true" }
+
+                    if mode() == Mode::ImageToPdf {
+                        button { disabled: busy, onclick: pick_image,
+                            svg {
+                                class: "icon",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "1.9",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                path { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }
+                                polyline { points: "17 8 12 3 7 8" }
+                                line { x1: "12", y1: "3", x2: "12", y2: "15" }
+                            }
+                            "Open Image"
+                        }
+                        button {
+                            disabled: busy,
+                            title: "Paste image from clipboard (Ctrl+V)",
+                            onclick: paste_from_clipboard,
+                            "Paste"
+                        }
+                        button {
+                            class: "primary",
+                            disabled: busy || !has_image,
+                            onclick: run_model,
+                            svg {
+                                class: "icon",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "1.9",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                polygon { points: "13 2 3 14 12 14 11 22 21 10 12 10 13 2" }
+                            }
+                            "Convert to HTML"
+                        }
+                        button {
+                            class: "ghost btn-danger",
+                            disabled: busy || (!has_image && !has_html),
+                            onclick: clear_all,
+                            "Clear all"
+                        }
+                    } else if mode() == Mode::PromptToPdf {
+                        button {
+                            class: "primary",
+                            disabled: busy || !has_doc_prompt,
+                            onclick: run_prompt,
+                            svg {
+                                class: "icon",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "1.9",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                polygon { points: "13 2 3 14 12 14 11 22 21 10 12 10 13 2" }
+                            }
+                            "Generate HTML"
+                        }
+                        button {
+                            class: "ghost btn-danger",
+                            disabled: busy || (!has_doc_prompt && !has_html),
+                            onclick: clear_all,
+                            "Clear all"
+                        }
+                    } else {
+                        button { disabled: busy, onclick: pick_pdf,
+                            svg {
+                                class: "icon",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "1.9",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                path { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }
+                                polyline { points: "14 2 14 8 20 8" }
+                            }
+                            "Open PDF"
+                        }
+                        button {
+                            class: "primary",
+                            disabled: busy || !has_pdf,
+                            title: "Extract text, headings, and tables directly into editable HTML (instant, offline)",
+                            onclick: quick_extract_pdf,
+                            "Quick Extract HTML"
+                        }
+                        button {
+                            disabled: busy || !has_pdf,
+                            title: "Transcribe the selected PDF page using local Ollama Vision AI",
+                            onclick: convert_pdf_page_ai,
+                            "Convert Page (AI)"
+                        }
+                        button {
+                            class: "ghost btn-danger",
+                            disabled: busy || (!has_pdf && !has_html),
+                            onclick: clear_all,
+                            "Clear all"
                         }
                     }
                 }
-                textarea {
-                    id: "custom-instructions-input",
-                    class: "custom-prompt-input",
-                    rows: "2",
-                    disabled: busy,
-                    placeholder: "Optional styling or extraction rules (e.g. \"Use a clean sans-serif font\", \"Translate headings to English\", \"Highlight totals\")…",
-                    value: "{extra_prompt}",
-                    oninput: move |e| extra_prompt.set(e.value()),
+
+                div { class: "toolbar-group",
+                    div { class: "mode-dropdown",
+                        button {
+                            class: "page-setup-btn",
+                            disabled: busy,
+                            title: "Configure PDF paper size, orientation, and margins",
+                            aria_haspopup: "dialog",
+                            aria_expanded: "{page_menu_open()}",
+                            onclick: move |_| {
+                                mode_menu_open.set(false);
+                                page_menu_open.toggle();
+                            },
+                            svg {
+                                class: "icon",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "1.9",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                rect { x: "5", y: "3", width: "14", height: "18", rx: "2" }
+                                line { x1: "9", y1: "8", x2: "15", y2: "8" }
+                                line { x1: "9", y1: "12", x2: "15", y2: "12" }
+                            }
+                            span { "{cur_setup.summary()}" }
+                            span { class: "mode-caret", aria_hidden: "true", "▾" }
+                        }
+                        if page_menu_open() && !busy {
+                            div {
+                                class: "mode-backdrop",
+                                onclick: move |_| page_menu_open.set(false),
+                            }
+                            div { class: "page-setup-menu", role: "dialog", aria_label: "Page setup controls",
+                                div { class: "page-setup-section",
+                                    span { class: "page-setup-label", "Paper Size" }
+                                    div { class: "page-setup-pills",
+                                        for paper in PaperSize::ALL {
+                                            button {
+                                                class: if cur_setup.paper == paper { "chip active" } else { "chip" },
+                                                onclick: move |_| update_page_setup(PageSetup { paper, ..cur_setup }),
+                                                "{paper.label()}"
+                                            }
+                                        }
+                                    }
+                                }
+                                div { class: "page-setup-section",
+                                    span { class: "page-setup-label", "Orientation" }
+                                    div { class: "page-setup-pills",
+                                        for orient in [Orientation::Portrait, Orientation::Landscape] {
+                                            button {
+                                                class: if cur_setup.orientation == orient { "chip active" } else { "chip" },
+                                                onclick: move |_| update_page_setup(PageSetup { orientation: orient, ..cur_setup }),
+                                                "{orient.label()}"
+                                            }
+                                        }
+                                    }
+                                }
+                                div { class: "page-setup-section",
+                                    span { class: "page-setup-label", "Margins" }
+                                    div { class: "page-setup-pills",
+                                        for (mm, lbl) in [(0u32, "0mm"), (8, "8mm"), (15, "15mm"), (25, "25mm")] {
+                                            button {
+                                                class: if cur_setup.margin_mm == mm { "chip active" } else { "chip" },
+                                                onclick: move |_| update_page_setup(PageSetup { margin_mm: mm, ..cur_setup }),
+                                                "{lbl}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    button { disabled: busy || !has_html, onclick: save_html, "Save HTML" }
+                    button { class: "primary", disabled: busy || !has_html, onclick: export_pdf,
+                        svg {
+                            class: "icon",
+                            view_box: "0 0 24 24",
+                            fill: "none",
+                            stroke: "currentColor",
+                            stroke_width: "1.9",
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            path { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }
+                            polyline { points: "14 2 14 8 20 8" }
+                            path { d: "M12 18v-6" }
+                            path { d: "m9 15 3 3 3-3" }
+                        }
+                        "Export PDF"
+                    }
                 }
             }
-        }
 
-        match status() {
-            Status::Idle => rsx! {},
-            Status::Busy(msg) => rsx! {
-                div { class: "status busy", role: "status", aria_live: "polite",
-                    span { class: "spinner" }
-                    "{msg}"
-                }
-            },
-            Status::MissingModel(model) => rsx! {
-                div { class: "status warn", role: "status", aria_live: "polite",
-                    span { "Model `{model}` is not installed in Ollama." }
-                    span { class: "spacer" }
-                    button {
-                        class: "primary",
-                        onclick: download_missing_model,
-                        match mode() {
-                            Mode::ImageToPdf if has_image => format!("Download `{model}` & Convert"),
-                            Mode::PromptToPdf if has_doc_prompt => format!("Download `{model}` & Generate"),
-                            _ => format!("Download `{model}`"),
-                        }
-                    }
-                }
-            },
-            Status::Downloading(update) => rsx! {
-                div { class: "status busy status-col", role: "status", aria_live: "polite",
-                    div { class: "status-row",
-                        span { class: "spinner" }
-                        span { "{update.text}" }
-                    }
-                    if let Some(pct) = update.percent {
-                        div { class: "progress-track",
-                            div { class: "progress-fill", width: "{pct}%" }
-                        }
-                    }
-                }
-            },
-            Status::Ok(msg) => rsx! {
-                div { class: "status ok", role: "status", aria_live: "polite", "{msg}" }
-            },
-            Status::Error(msg) => rsx! {
-                div { class: "status error", role: "alert", "{msg}" }
-            },
-        }
-
-        div { class: "panes",
-            // Left: source image or document prompt composer
-            if mode() == Mode::ImageToPdf {
-                section { class: "pane", aria_label: "Source document image",
-                    header {
-                        span { class: "pane-header-title", "Source image" }
-                        if let Some(img) = image.read().as_ref() {
-                            span { class: "muted path-label", "· {img.path.display()}" }
-                        }
+            if mode() == Mode::ImageToPdf || mode() == Mode::PdfToHtml {
+                div { class: "custom-prompt-box",
+                    div { class: "custom-prompt-header",
+                        label { r#for: "custom-instructions-input", "Custom instructions" }
+                        span { class: "muted", "(appended to AI vision prompt)" }
                         span { class: "spacer" }
-                        if has_image {
+                        if !extra_prompt.read().is_empty() {
                             button {
                                 class: "btn-small ghost",
                                 disabled: busy,
-                                onclick: clear_image,
+                                onclick: move |_| extra_prompt.set(String::new()),
                                 "Clear"
                             }
                         }
                     }
-                    div { class: "pane-body image-body",
+                    textarea {
+                        id: "custom-instructions-input",
+                        class: "custom-prompt-input",
+                        rows: "2",
+                        disabled: busy,
+                        placeholder: "Optional styling or extraction rules (e.g. \"Use a clean sans-serif font\", \"Translate headings to English\", \"Highlight totals\")…",
+                        value: "{extra_prompt}",
+                        oninput: move |e| extra_prompt.set(e.value()),
+                    }
+                }
+            }
+
+            match status() {
+                Status::Idle => rsx! {},
+                Status::Busy(msg) => rsx! {
+                    div { class: "status busy", role: "status", aria_live: "polite",
+                        span { class: "spinner" }
+                        "{msg}"
+                    }
+                },
+                Status::MissingModel(model) => rsx! {
+                    div { class: "status warn", role: "status", aria_live: "polite",
+                        span { "Model `{model}` is not installed in Ollama." }
+                        span { class: "spacer" }
+                        button {
+                            class: "primary",
+                            onclick: download_missing_model,
+                            match mode() {
+                                Mode::ImageToPdf if has_image => format!("Download `{model}` & Convert"),
+                                Mode::PromptToPdf if has_doc_prompt => format!("Download `{model}` & Generate"),
+                                Mode::PdfToHtml if has_pdf => format!("Download `{model}` & Convert"),
+                                _ => format!("Download `{model}`"),
+                            }
+                        }
+                    }
+                },
+                Status::Downloading(update) => rsx! {
+                    div { class: "status busy status-col", role: "status", aria_live: "polite",
+                        div { class: "status-row",
+                            span { class: "spinner" }
+                            span { "{update.text}" }
+                        }
+                        if let Some(pct) = update.percent {
+                            div { class: "progress-track",
+                                div { class: "progress-fill", width: "{pct}%" }
+                            }
+                        }
+                    }
+                },
+                Status::Ok(msg) => rsx! {
+                    div { class: "status ok", role: "status", aria_live: "polite", "{msg}" }
+                },
+                Status::Error(msg) => rsx! {
+                    div { class: "status error", role: "alert", "{msg}" }
+                },
+            }
+
+            div { class: "panes",
+                // Left pane: source image (with crop/rotate/deskew) OR prompt composer OR PDF preview
+                if mode() == Mode::ImageToPdf {
+                    section { class: "pane", aria_label: "Source document image",
+                        header {
+                            span { class: "pane-header-title", "Source image" }
+                            if let Some(img) = image.read().as_ref() {
+                                span { class: "muted path-label", "· {img.path.display()}" }
+                            }
+                            span { class: "spacer" }
+                            if has_image {
+                                button {
+                                    class: "btn-small ghost",
+                                    disabled: busy,
+                                    onclick: clear_image,
+                                    "Clear"
+                                }
+                            }
+                        }
                         if let Some(img) = image.read().as_ref() {
-                            img { src: "{img.preview}", alt: "Uploaded source document" }
-                        } else {
-                            button {
-                                class: "empty-card",
+                            div { class: "image-tools-bar", role: "toolbar", aria_label: "Image crop, rotate and deskew tools",
+                                button {
+                                    class: "btn-small",
+                                    disabled: busy,
+                                    title: "Rotate 90° counter-clockwise",
+                                    onclick: rotate_ccw,
+                                    "⟲ 90°"
+                                }
+                                button {
+                                    class: "btn-small",
+                                    disabled: busy,
+                                    title: "Rotate 90° clockwise",
+                                    onclick: rotate_cw,
+                                    "⟳ 90°"
+                                }
+                                button {
+                                    class: "btn-small",
+                                    disabled: busy,
+                                    title: "Automatically detect tilt and straighten document lines",
+                                    onclick: auto_deskew,
+                                    "Auto Deskew"
+                                }
+                                label { class: "prop-field", title: "Fine straighten angle (-15° to +15°)",
+                                    span { class: "muted", "Angle" }
+                                    input {
+                                        class: "prop-num",
+                                        r#type: "number",
+                                        min: "-15",
+                                        max: "15",
+                                        step: "0.5",
+                                        disabled: busy,
+                                        value: "{straighten_deg}",
+                                        oninput: move |e| {
+                                            if let Ok(v) = e.value().parse::<f32>() {
+                                                straighten_deg.set(v.clamp(-15.0, 15.0));
+                                            }
+                                        },
+                                    }
+                                    button {
+                                        class: "btn-small",
+                                        disabled: busy || straighten_deg().abs() < 0.1,
+                                        onclick: apply_straighten,
+                                        "Apply"
+                                    }
+                                }
+                                span { class: "editor-sep", aria_hidden: "true" }
+                                if !crop_mode() {
+                                    button {
+                                        class: "btn-small",
+                                        disabled: busy,
+                                        title: "Drag a rectangle on the image to crop",
+                                        onclick: move |_| crop_mode.set(true),
+                                        "Crop"
+                                    }
+                                } else {
+                                    button {
+                                        class: "btn-small primary",
+                                        disabled: busy,
+                                        onclick: apply_crop,
+                                        "Apply Crop"
+                                    }
+                                    button {
+                                        class: "btn-small",
+                                        disabled: busy,
+                                        onclick: move |_| crop_mode.set(false),
+                                        "Cancel"
+                                    }
+                                }
+                                if img.modified {
+                                    span { class: "spacer" }
+                                    button {
+                                        class: "btn-small ghost",
+                                        disabled: busy,
+                                        title: "Restore original unedited image",
+                                        onclick: reset_image_edits,
+                                        "Reset"
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "pane-body image-body",
+                            if let Some(img) = image.read().as_ref() {
+                                if crop_mode() {
+                                    div { class: "crop-container",
+                                        div { id: "df-crop-stage", class: "crop-stage",
+                                            img { src: "{img.preview}", alt: "Source document crop preview", draggable: false }
+                                            div {
+                                                class: "crop-box",
+                                                style: "left:{cx * 100.0}%;top:{cy * 100.0}%;width:{cw * 100.0}%;height:{ch * 100.0}%;",
+                                                span { class: "crop-badge",
+                                                    "{(cw * 100.0).round()}% × {(ch * 100.0).round()}%"
+                                                }
+                                            }
+                                        }
+                                        span { class: "muted", style: "font-size:12px;",
+                                            "Click and drag across the image to select the crop area, then click Apply Crop."
+                                        }
+                                    }
+                                } else {
+                                    img { src: "{img.preview}", alt: "Uploaded source document", draggable: false }
+                                }
+                            } else {
+                                button {
+                                    class: "empty-card",
+                                    disabled: busy,
+                                    onclick: pick_image,
+                                    div { class: "empty-icon", aria_hidden: "true",
+                                        svg {
+                                            width: "20",
+                                            height: "20",
+                                            view_box: "0 0 24 24",
+                                            fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "1.8",
+                                            stroke_linecap: "round",
+                                            stroke_linejoin: "round",
+                                            rect { x: "3", y: "3", width: "18", height: "18", rx: "2", ry: "2" }
+                                            circle { cx: "8.5", cy: "8.5", r: "1.5" }
+                                            polyline { points: "21 15 16 10 5 21" }
+                                        }
+                                    }
+                                    span { class: "empty-title", "Select, drop, or paste an image" }
+                                    span { class: "empty-desc", "Choose a scanned invoice, receipt, or document, drag & drop a file here, or press Ctrl+V." }
+                                    span { class: "empty-formats", "PNG · JPG · WEBP · TIFF · BMP · CTRL+V" }
+                                }
+                            }
+                        }
+                    }
+                } else if mode() == Mode::PromptToPdf {
+                    section { class: "pane", aria_label: "Document generation prompt",
+                        header {
+                            span { class: "pane-header-title", "Document prompt" }
+                            span { class: "spacer" }
+                            if has_doc_prompt {
+                                button {
+                                    class: "btn-small ghost",
+                                    disabled: busy,
+                                    onclick: clear_prompt,
+                                    "Clear"
+                                }
+                            }
+                        }
+                        div { class: "pane-body prompt-pane-body",
+                            textarea {
+                                class: "prompt-composer",
+                                aria_label: "Document generation prompt",
                                 disabled: busy,
-                                onclick: pick_image,
+                                placeholder: "Describe the document you want to generate...\n\nExample: Generate me a poultry farm bill of 10kg chicken with itemized rates, weight, subtotal, and total.",
+                                value: "{doc_prompt}",
+                                oninput: move |e| doc_prompt.set(e.value()),
+                            }
+                            div { class: "chips",
+                                span { class: "muted", "Examples:" }
+                                button {
+                                    class: "chip",
+                                    disabled: busy,
+                                    onclick: move |_| doc_prompt.set("Generate me a poultry farm bill of 10kg chicken with itemized rates, weight, subtotal, and total.".into()),
+                                    "Poultry farm bill (10 chickens)"
+                                }
+                                button {
+                                    class: "chip",
+                                    disabled: busy,
+                                    onclick: move |_| doc_prompt.set("Generate a freelance web development service invoice with 3 line items, tax, and payment terms".into()),
+                                    "Service invoice"
+                                }
+                                button {
+                                    class: "chip",
+                                    disabled: busy,
+                                    onclick: move |_| doc_prompt.set("Generate a monthly apartment rent receipt with landlord, tenant, period, amount, and signature line".into()),
+                                    "Rent receipt"
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    section { class: "pane", aria_label: "Source PDF document",
+                        header {
+                            span { class: "pane-header-title", "Source PDF" }
+                            if let Some(pdf) = pdf_doc.read().as_ref() {
+                                span { class: "muted path-label", "· {pdf.path.display()}" }
+                            }
+                            span { class: "spacer" }
+                            if let Some(pdf) = pdf_doc.read().as_ref() {
+                                if pdf.page_count() > 1 {
+                                    button {
+                                        class: "btn-small",
+                                        disabled: busy || pdf.active_page == 0,
+                                        onclick: move |_| {
+                                            if let Some(ref mut p) = *pdf_doc.write() {
+                                                p.active_page = p.active_page.saturating_sub(1);
+                                            }
+                                        },
+                                        "‹ Prev"
+                                    }
+                                    span { class: "pane-badge", "{pdf.active_page + 1} / {pdf.page_count()}" }
+                                    button {
+                                        class: "btn-small",
+                                        disabled: busy || pdf.active_page + 1 >= pdf.page_count(),
+                                        onclick: move |_| {
+                                            if let Some(ref mut p) = *pdf_doc.write() {
+                                                if p.active_page + 1 < p.page_count() {
+                                                    p.active_page += 1;
+                                                }
+                                            }
+                                        },
+                                        "Next ›"
+                                    }
+                                }
+                                button {
+                                    class: "btn-small ghost",
+                                    disabled: busy,
+                                    onclick: clear_pdf,
+                                    "Clear"
+                                }
+                            }
+                        }
+                        div { class: "pane-body image-body",
+                            if let Some(pdf) = pdf_doc.read().as_ref() {
+                                if let Some(page) = pdf.current_page() {
+                                    img { src: "{page.preview}", alt: "Imported PDF page {page.page_number}", draggable: false }
+                                } else {
+                                    div { class: "empty-state",
+                                        span { class: "empty-title", "PDF loaded (text mode)" }
+                                        span { class: "empty-desc", "Preview rasterizer unavailable, but text was extracted. Click Quick Extract HTML to edit it." }
+                                    }
+                                }
+                            } else {
+                                button {
+                                    class: "empty-card",
+                                    disabled: busy,
+                                    onclick: pick_pdf,
+                                    div { class: "empty-icon", aria_hidden: "true",
+                                        svg {
+                                            width: "20",
+                                            height: "20",
+                                            view_box: "0 0 24 24",
+                                            fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "1.8",
+                                            stroke_linecap: "round",
+                                            stroke_linejoin: "round",
+                                            path { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }
+                                            polyline { points: "14 2 14 8 20 8" }
+                                            line { x1: "9", y1: "13", x2: "15", y2: "13" }
+                                            line { x1: "9", y1: "17", x2: "13", y2: "17" }
+                                        }
+                                    }
+                                    span { class: "empty-title", "Import a PDF document" }
+                                    span { class: "empty-desc", "Open or drop a PDF to extract headings, paragraphs, and tables into editable HTML, or convert pages with AI." }
+                                    span { class: "empty-formats", "PDF → EDITABLE HTML5" }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Right pane: generated HTML / visual editor + AI Follow-Up Chat
+                section { class: "pane", aria_label: "Generated document output",
+                    header {
+                        div { class: "toolbar-group", role: "tablist", aria_label: "Output views",
+                            button {
+                                class: if tab() == Tab::Preview { "tab active" } else { "tab" },
+                                role: "tab",
+                                aria_selected: "{tab() == Tab::Preview}",
+                                onclick: move |_| tab.set(Tab::Preview),
+                                "Preview"
+                            }
+                            if has_html {
+                                button {
+                                    class: if tab() == Tab::Edit { "tab active" } else { "tab" },
+                                    role: "tab",
+                                    aria_selected: "{tab() == Tab::Edit}",
+                                    onclick: move |_| tab.set(Tab::Edit),
+                                    "Visual Edit"
+                                }
+                            }
+                            button {
+                                class: if tab() == Tab::Source { "tab active" } else { "tab" },
+                                role: "tab",
+                                aria_selected: "{tab() == Tab::Source}",
+                                onclick: move |_| tab.set(Tab::Source),
+                                "HTML source"
+                            }
+                        }
+                        span { class: "spacer" }
+                        if has_html {
+                            button {
+                                class: if refine_open() { "btn-small active-accent" } else { "btn-small" },
+                                disabled: busy,
+                                title: "Open AI follow-up chat to refine this document",
+                                onclick: move |_| refine_open.toggle(),
+                                svg {
+                                    class: "icon",
+                                    view_box: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    stroke_width: "1.9",
+                                    stroke_linecap: "round",
+                                    stroke_linejoin: "round",
+                                    path { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" }
+                                }
+                                "Refine with AI"
+                            }
+                            span { class: "pane-badge", "{html_line_count} lines" }
+                            button {
+                                class: "btn-small ghost",
+                                disabled: busy,
+                                onclick: clear_output,
+                                "Clear"
+                            }
+                        }
+                    }
+                    div { class: "pane-body",
+                        if !has_html {
+                            div { class: "empty-state",
                                 div { class: "empty-icon", aria_hidden: "true",
                                     svg {
                                         width: "20",
@@ -611,144 +1831,107 @@ pub fn Convert() -> Element {
                                         stroke_width: "1.8",
                                         stroke_linecap: "round",
                                         stroke_linejoin: "round",
-                                        rect { x: "3", y: "3", width: "18", height: "18", rx: "2", ry: "2" }
-                                        circle { cx: "8.5", cy: "8.5", r: "1.5" }
-                                        polyline { points: "21 15 16 10 5 21" }
+                                        path { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }
+                                        polyline { points: "14 2 14 8 20 8" }
+                                        line { x1: "16", y1: "13", x2: "8", y2: "13" }
+                                        line { x1: "16", y1: "17", x2: "8", y2: "17" }
                                     }
                                 }
-                                span { class: "empty-title", "Select a document image" }
-                                span { class: "empty-desc", "Choose a scanned page, invoice, receipt, or form to transcribe into HTML5." }
-                                span { class: "empty-formats", "PNG · JPG · WEBP · TIFF · BMP" }
+                                span { class: "empty-title", "No HTML output yet" }
+                                span { class: "empty-desc",
+                                    match mode() {
+                                        Mode::ImageToPdf => "Open, drop, or paste an image and click Convert to HTML. Once generated, Visual Edit, AI Refine, and PDF export will unlock.",
+                                        Mode::PromptToPdf => "Enter a document prompt and click Generate HTML. Once generated, Visual Edit, AI Refine, and PDF export will unlock.",
+                                        Mode::PdfToHtml => "Open or drop a PDF and click Quick Extract HTML or Convert Page (AI). Once generated, Visual Edit and PDF export will unlock.",
+                                    }
+                                }
+                            }
+                        } else if tab() == Tab::Preview {
+                            iframe { class: "preview", srcdoc: "{html}", title: "HTML document preview" }
+                        } else if tab() == Tab::Edit {
+                            VisualEditor { html, busy, status }
+                        } else {
+                            textarea {
+                                class: "editor",
+                                aria_label: "HTML source code",
+                                spellcheck: false,
+                                value: "{html}",
+                                oninput: move |e| html.set(e.value()),
                             }
                         }
                     }
-                }
-            } else {
-                section { class: "pane", aria_label: "Document generation prompt",
-                    header {
-                        span { class: "pane-header-title", "Document prompt" }
-                        span { class: "spacer" }
-                        if has_doc_prompt {
-                            button {
-                                class: "btn-small ghost",
-                                disabled: busy,
-                                onclick: clear_prompt,
-                                "Clear"
-                            }
-                        }
-                    }
-                    div { class: "pane-body prompt-pane-body",
-                        textarea {
-                            class: "prompt-composer",
-                            aria_label: "Document generation prompt",
-                            disabled: busy,
-                            placeholder: "Describe the document you want to generate...\n\nExample: Generate me a poultry farm bill of 10kg chicken with itemized rates, weight, subtotal, and total.",
-                            value: "{doc_prompt}",
-                            oninput: move |e| doc_prompt.set(e.value()),
-                        }
-                        div { class: "chips",
-                            span { class: "muted", "Examples:" }
-                            button {
-                                class: "chip",
-                                disabled: busy,
-                                onclick: move |_| doc_prompt.set("Generate me a poultry farm bill of 10kg chicken with itemized rates, weight, subtotal, and total.".into()),
-                                "Poultry farm bill (10 chickens)"
-                            }
-                            button {
-                                class: "chip",
-                                disabled: busy,
-                                onclick: move |_| doc_prompt.set("Generate a freelance web development service invoice with 3 line items, tax, and payment terms".into()),
-                                "Service invoice"
-                            }
-                            button {
-                                class: "chip",
-                                disabled: busy,
-                                onclick: move |_| doc_prompt.set("Generate a monthly apartment rent receipt with landlord, tenant, period, amount, and signature line".into()),
-                                "Rent receipt"
-                            }
-                        }
-                    }
-                }
-            }
 
-            // Right: generated HTML / visual editor
-            section { class: "pane", aria_label: "Generated document output",
-                header {
-                    div { class: "toolbar-group", role: "tablist", aria_label: "Output views",
-                        button {
-                            class: if tab() == Tab::Preview { "tab active" } else { "tab" },
-                            role: "tab",
-                            aria_selected: "{tab() == Tab::Preview}",
-                            onclick: move |_| tab.set(Tab::Preview),
-                            "Preview"
-                        }
-                        if has_html {
-                            button {
-                                class: if tab() == Tab::Edit { "tab active" } else { "tab" },
-                                role: "tab",
-                                aria_selected: "{tab() == Tab::Edit}",
-                                onclick: move |_| tab.set(Tab::Edit),
-                                "Visual Edit"
-                            }
-                        }
-                        button {
-                            class: if tab() == Tab::Source { "tab active" } else { "tab" },
-                            role: "tab",
-                            aria_selected: "{tab() == Tab::Source}",
-                            onclick: move |_| tab.set(Tab::Source),
-                            "HTML source"
-                        }
-                    }
-                    span { class: "spacer" }
-                    if has_html {
-                        span { class: "pane-badge", "{html_line_count} lines" }
-                        button {
-                            class: "btn-small ghost",
-                            disabled: busy,
-                            onclick: clear_output,
-                            "Clear"
-                        }
-                    }
-                }
-                div { class: "pane-body",
-                    if !has_html {
-                        div { class: "empty-state",
-                            div { class: "empty-icon", aria_hidden: "true",
-                                svg {
-                                    width: "20",
-                                    height: "20",
-                                    view_box: "0 0 24 24",
-                                    fill: "none",
-                                    stroke: "currentColor",
-                                    stroke_width: "1.8",
-                                    stroke_linecap: "round",
-                                    stroke_linejoin: "round",
-                                    path { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }
-                                    polyline { points: "14 2 14 8 20 8" }
-                                    line { x1: "16", y1: "13", x2: "8", y2: "13" }
-                                    line { x1: "16", y1: "17", x2: "8", y2: "17" }
+                    if has_html && refine_open() {
+                        div { class: "refine-drawer", role: "region", aria_label: "AI Follow-Up Chat",
+                            div { class: "refine-header",
+                                span { class: "pane-header-title", "Refine with AI" }
+                                div { class: "chips",
+                                    for suggestion in [
+                                        "Make layout more compact",
+                                        "Style tables cleanly",
+                                        "Add 10% tax row",
+                                        "Fix alignment & spacing",
+                                    ] {
+                                        button {
+                                            class: "chip",
+                                            disabled: busy,
+                                            onclick: move |_| send_refinement(Some(suggestion.into())),
+                                            "{suggestion}"
+                                        }
+                                    }
+                                }
+                                span { class: "spacer" }
+                                if !chat_history.read().is_empty() {
+                                    button {
+                                        class: "btn-small ghost",
+                                        disabled: busy,
+                                        onclick: move |_| chat_history.set(Vec::new()),
+                                        "Clear chat"
+                                    }
+                                }
+                                button {
+                                    class: "btn-small ghost",
+                                    title: "Close AI Refine panel",
+                                    onclick: move |_| refine_open.set(false),
+                                    "×"
                                 }
                             }
-                            span { class: "empty-title", "No HTML output yet" }
-                            span { class: "empty-desc",
-                                if mode() == Mode::ImageToPdf {
-                                    "Open an image and click Convert to HTML. Once generated, Visual Edit and PDF export will unlock."
-                                } else {
-                                    "Enter a document prompt and click Generate HTML. Once generated, Visual Edit and PDF export will unlock."
+
+                            if !chat_history.read().is_empty() {
+                                div { class: "refine-messages",
+                                    for turn in chat_history() {
+                                        div {
+                                            class: if turn.role == ChatRole::User { "refine-msg user" } else { "refine-msg assistant" },
+                                            span { class: "refine-role",
+                                                if turn.role == ChatRole::User { "You" } else { "AI" }
+                                            }
+                                            span { class: "refine-text", "{turn.content}" }
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    } else if tab() == Tab::Preview {
-                        iframe { class: "preview", srcdoc: "{html}", title: "HTML document preview" }
-                    } else if tab() == Tab::Edit {
-                        VisualEditor { html, busy, status }
-                    } else {
-                        textarea {
-                            class: "editor",
-                            aria_label: "HTML source code",
-                            spellcheck: false,
-                            value: "{html}",
-                            oninput: move |e| html.set(e.value()),
+
+                            form {
+                                class: "refine-form",
+                                onsubmit: move |evt| {
+                                    evt.prevent_default();
+                                    send_refinement(None)
+                                },
+                                input {
+                                    class: "refine-input",
+                                    aria_label: "Follow-up refinement instruction",
+                                    disabled: busy,
+                                    placeholder: "Ask AI to refine this HTML (e.g. \"Change header accent to dark green\", \"Add a notes footer\")…",
+                                    value: "{refine_input}",
+                                    oninput: move |e| refine_input.set(e.value()),
+                                }
+                                button {
+                                    class: "primary btn-small",
+                                    r#type: "submit",
+                                    disabled: busy || refine_input.read().trim().is_empty(),
+                                    "Apply"
+                                }
+                            }
                         }
                     }
                 }

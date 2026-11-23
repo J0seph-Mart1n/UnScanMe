@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "DocForge AI — Local Image to HTML & PDF Converter",
+  title: "DocForge — Local Document Workbench (Image & PDF to Editable HTML5 & Vector PDF)",
   description:
-    "Convert scanned documents, receipts, and photos into semantic HTML5 and vector PDFs using 100% local vision AI powered by Rust, Dioxus, Ollama, and Chromium.",
+    "Convert document images, prompts, and PDFs into editable HTML5 with a Visual Table Editor, pure-Rust crop/deskew, AI follow-up refinement, and headless Chromium vector PDF export — 100% locally.",
 };
 
 export default function RootLayout({
