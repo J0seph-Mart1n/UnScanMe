@@ -7,8 +7,9 @@
 use dioxus::prelude::*;
 
 use settings::Settings;
-use views::{Convert, Navbar, SettingsPage};
+use views::{Convert, ConvertState, Navbar, SettingsPage};
 
+mod editor;
 mod ollama;
 mod pdf;
 mod settings;
@@ -41,8 +42,9 @@ fn main() {
 
 #[component]
 fn App() -> Element {
-    // Settings are shared with every page through the context API.
+    // Settings and converter state are shared across routes through the context API.
     use_context_provider(|| Signal::new(Settings::load()));
+    use_context_provider(ConvertState::new);
 
     rsx! {
         document::Link { rel: "icon", href: FAVICON }

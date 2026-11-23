@@ -83,16 +83,21 @@ pub fn prepare_image(bytes: &[u8], max_dim: u32) -> Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
-/// Send the image to the model and return a full HTML document.
-pub async fn image_to_html(settings: &Settings, png: &[u8]) -> Result<String> {
+const DOCUMENT_GENERATION_PROMPT: &str = r#"You are an expert document designer and HTML5 generator.
+Create a SINGLE, complete, self-contained HTML5 document that fulfills the user's request cleanly and professionally.
+
+Follow these rules strictly:
+1. **Complete & Realistic Content**: Generate all requested sections, headings, dates, reference numbers, itemized tables, quantities, unit prices, subtotals, taxes (if appropriate), and accurately calculated totals.
+2. **Layout & Print Styling**: Use clean modern HTML5 and CSS inside a single <style> block in <head>. Include `@page { size: A4; margin: 15mm; }` and ensure the layout fits cleanly on an A4 page.
+3. **Tables & Formatting**: Style tables with `border-collapse: collapse`, clear borders, readable padding, and right-aligned numbers/currency.
+4. **No External Resources**: Do NOT use <img> tags, external URLs, JavaScript, or external fonts. Use inline SVG or CSS shapes only if a simple logo/divider is helpful.
+5. **Output Format**: Return ONLY the raw HTML code starting with <!DOCTYPE html> and ending with </html>. Do NOT wrap the output in markdown code fences or include explanatory text."#;
+
+async fn send_chat(settings: &Settings, prompt: &str, images: Vec<String>) -> Result<String> {
     let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
     let request = ChatRequest {
         model: &settings.model,
-        messages: vec![ChatMessage {
-            role: "user",
-            content: &settings.prompt,
-            images: vec![base64::engine::general_purpose::STANDARD.encode(png)],
-        }],
+        messages: vec![ChatMessage { role: "user", content: prompt, images }],
         stream: false,
         options: ChatOptions { temperature: settings.temperature, num_ctx: settings.num_ctx },
     };
@@ -117,6 +122,18 @@ pub async fn image_to_html(settings: &Settings, png: &[u8]) -> Result<String> {
         return Err(anyhow!("the model returned an empty response"));
     }
     Ok(html)
+}
+
+/// Send the image to the model and return a full HTML document.
+pub async fn image_to_html(settings: &Settings, png: &[u8]) -> Result<String> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+    send_chat(settings, &settings.prompt, vec![encoded]).await
+}
+
+/// Generate a full HTML document directly from a user text prompt (no image).
+pub async fn prompt_to_html(settings: &Settings, user_request: &str) -> Result<String> {
+    let prompt = format!("{DOCUMENT_GENERATION_PROMPT}\n\nUser request:\n{}", user_request.trim());
+    send_chat(settings, &prompt, Vec::new()).await
 }
 
 /// List models installed in Ollama (used by the settings page).
