@@ -1,8 +1,8 @@
 export type SampleId = "invoice" | "lab" | "research";
-export type WorkbenchMode = "image" | "prompt" | "pdf";
 export type OutputTab = "preview" | "visual" | "source";
 export type OsTab = "linux" | "macos" | "windows";
 export type PagePresetId = "a4-portrait" | "a4-landscape" | "letter-portrait";
+export type BentoSpan = "span-4" | "span-3" | "span-2";
 
 export type CapabilityIconName =
   | "pdf"
@@ -20,6 +20,7 @@ export interface TableRowItem {
 
 export interface SampleDoc {
   id: SampleId;
+  shortLabel: string;
   title: string;
   fileName: string;
   scanSize: string;
@@ -41,28 +42,49 @@ export interface PagePreset {
   marginMm: number;
 }
 
-export const WORKBENCH_MODES: { id: WorkbenchMode; label: string; badge: string }[] = [
-  { id: "image", label: "Image to PDF", badge: "Vision AI + Preprocess" },
-  { id: "prompt", label: "Prompt to PDF", badge: "Text -> HTML5" },
-  { id: "pdf", label: "PDF to Editable HTML", badge: "Poppler BBox + Raster" },
+export interface MetricItem {
+  value: string;
+  label: string;
+}
+
+export interface BentoFeature {
+  id: string;
+  tag: string;
+  title: string;
+  description: string;
+  icon: CapabilityIconName;
+  span: BentoSpan;
+}
+
+export interface WorkflowStep {
+  step: string;
+  title: string;
+  body: string;
+}
+
+export const METRICS: MetricItem[] = [
+  { value: "100% Local", label: "Zero cloud uploads or API keys" },
+  { value: "< 50 KB", label: "Crisp, searchable vector PDFs" },
+  { value: "3 Platforms", label: "Native Windows, macOS & Linux" },
+  { value: "$0 Forever", label: "Free personal desktop edition" },
 ];
 
 export const PAGE_PRESETS: Record<PagePresetId, PagePreset> = {
   "a4-portrait": {
     id: "a4-portrait",
-    label: "A4 · Portrait · 15mm",
+    label: "A4 Portrait · 15mm",
     cssSize: "A4 portrait",
     marginMm: 15,
   },
   "a4-landscape": {
     id: "a4-landscape",
-    label: "A4 · Landscape · 10mm",
+    label: "A4 Landscape · 10mm",
     cssSize: "A4 landscape",
     marginMm: 10,
   },
   "letter-portrait": {
     id: "letter-portrait",
-    label: "Letter · Portrait · 15mm",
+    label: "Letter Portrait · 15mm",
     cssSize: "letter portrait",
     marginMm: 15,
   },
@@ -71,29 +93,31 @@ export const PAGE_PRESETS: Record<PagePresetId, PagePreset> = {
 export const SAMPLES: Record<SampleId, SampleDoc> = {
   invoice: {
     id: "invoice",
+    shortLabel: "Invoice",
     title: "Engineering Invoice",
     fileName: "scan_invoice_2048.jpg",
     scanSize: "3.8 MB JPEG Scan",
     pdfSize: "42 KB Vector PDF",
     pdfPages: 2,
     heading: "INVOICE #INV-2026-089",
-    subtitle: "Apex Robotics Lab · Issued: Nov 18, 2026 · Net 15",
+    subtitle: "Apex Robotics Lab · Issued Nov 18, 2026 · Net 15",
     headers: ["Deliverable", "Qty / Hours", "Line Total"],
     rows: [
       { col1: "Embedded Rust Firmware Audit", col2: "24 hrs", col3: "$2,880.00" },
-      { col1: "PCB Thermal Imaging & Calibration", col2: "1 unit", col3: "$950.00" },
-      { col1: "Local Vision Model Quantization", col2: "8 hrs", col3: "$1,120.00" },
+      { col1: "PCB Thermal Calibration", col2: "1 unit", col3: "$950.00" },
+      { col1: "Local Vision Model Tuning", col2: "8 hrs", col3: "$1,120.00" },
     ],
     totalLabel: "Total Due",
     totalValue: "$4,950.00",
-    note: "Payment via ACH / Wire. Verified offline on local workstation.",
+    note: "Payment via ACH / Wire. Processed offline on local workstation.",
   },
   lab: {
     id: "lab",
+    shortLabel: "Lab Report",
     title: "Clinical Lab Report",
     fileName: "pathology_panel_scan.png",
     scanSize: "5.1 MB PNG Scan",
-    pdfSize: "56 KB Vector PDF",
+    pdfSize: "48 KB Vector PDF",
     pdfPages: 3,
     heading: "COMPREHENSIVE METABOLIC PANEL",
     subtitle: "Patient ID: #8841-A · Specimen: Venous Blood · Local Pipeline",
@@ -109,115 +133,104 @@ export const SAMPLES: Record<SampleId, SampleDoc> = {
   },
   research: {
     id: "research",
+    shortLabel: "Benchmark",
     title: "Benchmark Table",
     fileName: "paper_page4_photo.webp",
     scanSize: "2.9 MB Camera Photo",
     pdfSize: "38 KB Vector PDF",
     pdfPages: 4,
-    heading: "Table 3: Local VLM Document Reconstruction",
-    subtitle: "Evaluated on 4 GB Laptop GPU (RTX 3050 Mobile · num_ctx = 8192)",
-    headers: ["Model / Engine", "Structure Score", "Memory Footprint"],
+    heading: "Table 3: Local Document Reconstruction",
+    subtitle: "Evaluated on 4 GB Laptop GPU · Fully Offline",
+    headers: ["Engine", "Table Accuracy", "Memory Footprint"],
     rows: [
-      { col1: "Qwen2.5-VL 3B (Q4_K_M)", col2: "97.8% ANLS", col3: "2.1 GB VRAM" },
-      { col1: "Qwen3-VL 4B (Q4_K_M)", col2: "98.6% ANLS", col3: "2.8 GB VRAM" },
-      { col1: "Legacy Tesseract OCR", col2: "74.2% ANLS", col3: "Loses table grid" },
+      { col1: "Qwen2.5-VL 3B (Local)", col2: "97.8% ANLS", col3: "2.1 GB VRAM" },
+      { col1: "Qwen3-VL 4B (Local)", col2: "98.6% ANLS", col3: "2.8 GB VRAM" },
+      { col1: "Legacy OCR Text Dump", col2: "74.2% ANLS", col3: "Loses table grid" },
     ],
     totalLabel: "Recommended Default",
     totalValue: "Qwen2.5-VL 3B / Qwen3-VL 4B",
-    note: "HTML5 semantic table representation preserves borders and alignment.",
+    note: "Clean semantic HTML tables preserve alignment and crisp typography.",
   },
 };
 
 export const REFINE_PRESETS = [
-  "Highlight the totals row in emerald",
-  "Add a late-fee & warranty note row",
-  "Switch typography to classic serif",
+  "Highlight totals",
+  "Add warranty row",
+  "Switch to serif",
 ] as const;
 
-export const CAPABILITIES: {
-  id: string;
-  tag: string;
-  title: string;
-  description: string;
-  detail: string;
-  icon: CapabilityIconName;
-}[] = [
-  {
-    id: "pdf-import",
-    tag: "Offline & AI PDF Import",
-    title: "PDF-to-Editable-HTML Import",
-    description:
-      "Ingest existing multi-page PDFs with instant Poppler BBox table clustering (no AI wait) or switch to Vision AI transcription per rasterized page.",
-    detail: "pdftotext -bbox-layout · pdftoppm · mutool · pure-Rust stream fallback",
-    icon: "pdf",
-  },
+export const CAPABILITIES: BentoFeature[] = [
   {
     id: "table-editor",
-    tag: "Canvas & Grid Editing",
-    title: "Visual Canvas & Interactive Table Editor",
+    tag: "Visual Editing",
+    title: "Interactive Table & Canvas Editor",
     description:
-      "Edit text inline, drag whole tables via the move handle, nudge elements on a 4px snap grid, insert shapes/images, and add/remove table rows & columns.",
-    detail: "Tab / Shift+Tab cell navigation · 50-step Undo/Redo · clean HTML5 export",
+      "Click any cell to edit text, drag whole tables cleanly across the page, add or remove rows and columns, and undo up to 50 steps.",
     icon: "table",
-  },
-  {
-    id: "refine-ai",
-    tag: "Conversational Edits",
-    title: "Refine with AI Follow-Up Chat",
-    description:
-      "Iterate on generated or imported HTML with follow-up prompts while protecting inline base64 images via compact placeholder tokens.",
-    detail: "Preserves data:image URIs · multi-turn context · targeted CSS/HTML edits",
-    icon: "chat",
+    span: "span-4",
   },
   {
     id: "image-prep",
-    tag: "Pure-Rust Preprocessing",
-    title: "Image Crop, Rotate & Auto-Deskew",
+    tag: "Image Cleanup",
+    title: "Smart Crop & Auto-Deskew",
     description:
-      "Straighten crooked camera scans automatically with projection-profile deskew detection (-15° to +15°), rotate 90°, or drag-crop regions before inference.",
-    detail: "Zero external CV runtime · bilinear resampling · non-destructive Reset",
+      "Drag the white crop frame to isolate regions and straighten crooked phone photos in one click.",
     icon: "crop",
+    span: "span-2",
   },
   {
     id: "clipboard-dnd",
-    tag: "Zero-Friction Input",
-    title: "Clipboard Paste (Ctrl+V) & Drag-and-Drop",
+    tag: "Fast Capture",
+    title: "Instant Paste & Drop",
     description:
-      "Paste screenshots directly with Ctrl+V (with wl-paste, xclip, pngpaste, and Windows fallback) or drop images and PDF files anywhere onto the workbench.",
-    detail: "PNG/JPG/WebP/TIFF/BMP & %PDF- validation · normalized PNG staging",
+      "Paste screenshots straight from your clipboard (Ctrl+V) or drop scans and multi-page PDFs anywhere.",
     icon: "paste",
+    span: "span-2",
+  },
+  {
+    id: "pdf-import",
+    tag: "Document Recovery",
+    title: "PDF-to-Editable-HTML Import",
+    description:
+      "Unlock trapped PDFs instantly with offline table layout recovery, or run local Vision AI on scanned pages without retyping a word.",
+    icon: "pdf",
+    span: "span-4",
+  },
+  {
+    id: "refine-ai",
+    tag: "Follow-Up Prompts",
+    title: "Refine with Local AI",
+    description:
+      "Ask AI in plain English to reformat tables, highlight totals, or adjust typography while keeping embedded images intact.",
+    icon: "chat",
+    span: "span-3",
   },
   {
     id: "page-setup",
-    tag: "Print Geometry Control",
-    title: "Toolbar Page Setup & Vector PDF Export",
+    tag: "Page Setup",
+    title: "Print-Ready Vector PDFs",
     description:
-      "Configure A4, Letter, Legal, A3, or A5 paper sizes, Portrait/Landscape orientation, and millimeter margins cleanly via idempotent @page CSS rules.",
-    detail: "Isolated Chromium / Edge headless profile · 100% searchable vector PDF",
+      "Choose A4, Letter, or Legal paper sizes, Portrait or Landscape orientation, and exact margins for crisp vector export.",
     icon: "page",
+    span: "span-3",
   },
 ];
 
-export const PIPELINE_STEPS = [
+export const WORKFLOW_STEPS: WorkflowStep[] = [
   {
     step: "01",
-    title: "Ingest & Preprocess",
-    body: "Drop an image or PDF, paste with Ctrl+V, or enter a prompt. Pure-Rust image ops crop, rotate, and auto-deskew before staging.",
+    title: "Drop or paste any scan",
+    body: "Drag in a photo, scanned image, or existing PDF — or press Ctrl+V to paste a screenshot directly.",
   },
   {
     step: "02",
-    title: "Reconstruct Semantic HTML5",
-    body: "Send scans to local Ollama Vision models or extract Poppler BBox tables offline into real <table>, <thead>, <tbody>, and CSS layouts.",
+    title: "Edit text, tables & layout",
+    body: "Clean up crooked scans, edit cells inline, rearrange tables visually, or refine formatting with AI.",
   },
   {
     step: "03",
-    title: "Visual Edit & Refine with AI",
-    body: "Double-click text, drag whole tables, insert shapes, run row/column actions, or send targeted follow-up edits in the AI chat drawer.",
-  },
-  {
-    step: "04",
-    title: "Page Setup & Export PDF",
-    body: "Inject @page size and margin rules from the top toolbar and print via an isolated headless Chromium or Edge process.",
+    title: "Export a crisp vector PDF",
+    body: "Pick your paper size and margins, then export a lightweight, 100% searchable PDF in seconds.",
   },
 ];
 
@@ -237,24 +250,24 @@ export const PLATFORM_DOWNLOADS: PlatformDownload[] = [
     id: "windows",
     title: "Windows",
     subtitle: "Windows 10 & 11 (64-bit)",
-    buttonLabel: "Download i hate scans Setup (.exe)",
-    href: "/downloads/i-hate-scans-Setup-0.1.0-x64.exe",
-    fileName: "i-hate-scans-Setup-0.1.0-x64.exe",
+    buttonLabel: "Download for Windows (.exe)",
+    href: "/downloads/UnScanMe-Setup-0.1.0-x64.exe",
+    fileName: "UnScanMe-Setup-0.1.0-x64.exe",
     steps: [
-      "Double-click i-hate-scans-Setup-0.1.0-x64.exe.",
-      "Click OK — installs with Start Menu & Desktop shortcuts.",
+      "Double-click UnScanMe-Setup-0.1.0-x64.exe.",
+      "Click OK to add Start Menu & Desktop shortcuts.",
     ],
   },
   {
     id: "macos",
     title: "macOS",
     subtitle: "Apple Silicon & Intel",
-    buttonLabel: "Download i hate scans (.dmg)",
-    href: "/downloads/i-hate-scans-0.1.0-universal.dmg",
-    fileName: "i-hate-scans-0.1.0-universal.dmg",
+    buttonLabel: "Download for macOS (.dmg)",
+    href: "/downloads/UnScanMe-0.1.0-universal.dmg",
+    fileName: "UnScanMe-0.1.0-universal.dmg",
     steps: [
-      "Double-click i-hate-scans-0.1.0-universal.dmg.",
-      "Double-click i hate scans.app inside to install to Applications.",
+      "Open UnScanMe-0.1.0-universal.dmg.",
+      "Open UnScanMe.app to install straight to Applications.",
     ],
   },
   {
@@ -262,36 +275,36 @@ export const PLATFORM_DOWNLOADS: PlatformDownload[] = [
     title: "Linux",
     subtitle: "Ubuntu, Debian, Mint, Fedora & Arch",
     buttonLabel: "Download Linux Installer",
-    href: "/downloads/i-hate-scans-Installer-0.1.0-linux-x86_64",
-    fileName: "i-hate-scans-Installer-0.1.0-linux-x86_64",
+    href: "/downloads/UnScanMe-Installer-0.1.0-linux-x86_64",
+    fileName: "UnScanMe-Installer-0.1.0-linux-x86_64",
     steps: [
-      "Allow executing in file Properties (or run the 1-line command below).",
-      "Installer pops up, installs to your app menu, and launches i hate scans.",
+      "Allow executing in Properties (or run the command below).",
+      "Installer adds your app menu entry and launches UnScanMe.",
     ],
     commandHint:
-      "chmod +x ~/Downloads/i-hate-scans-Installer-0.1.0-linux-x86_64 && ~/Downloads/i-hate-scans-Installer-0.1.0-linux-x86_64",
+      "chmod +x ~/Downloads/UnScanMe-Installer-0.1.0-linux-x86_64 && ~/Downloads/UnScanMe-Installer-0.1.0-linux-x86_64",
   },
 ];
 
 export const FAQS = [
   {
-    q: "Why convert documents into semantic HTML5 before exporting to PDF?",
-    a: "Image-wrapped PDFs are heavy and uneditable, and raw OCR text dumps break table alignment. Reconstructing into semantic HTML5 + CSS lets you inspect, visually move tables, edit individual cells, refine styles with AI, and print crisp searchable vector PDFs via Chromium.",
+    q: "Does UnScanMe send my documents or scans to the cloud?",
+    a: "Never. Every step — image crop and deskew, PDF text extraction, table editing, local Ollama vision processing, and vector PDF generation — runs 100% offline on your own computer.",
   },
   {
-    q: "Can I import existing PDFs without running a vision AI model?",
-    a: "Yes. i hate scans parses Poppler pdftotext -bbox-layout coordinates (clustering split flows into aligned HTML <table> rows), falls back to -layout or uncompressed PDF text streams offline, or lets you run Vision AI on any rasterized page when a PDF is a pure scan.",
+    q: "What file formats can I import and export?",
+    a: "You can paste screenshots from your clipboard or drop PNG, JPEG, WebP, TIFF, BMP, and PDF files. UnScanMe exports clean HTML5 and lightweight, searchable vector PDFs.",
   },
   {
-    q: "How does the Visual Editor protect my exported HTML?",
-    a: "All selection outlines, 8-point resize handles, and drag pills live inside an isolated #__df_editor_ui__ layer. Before syncing back to Rust or printing to PDF, i hate scans clones the DOM and strips all editor chrome and temporary contenteditable attributes.",
+    q: "Can I edit tables and fix wrong text after scanning?",
+    a: "Yes. Switch to the Table Editor to click and edit any cell, drag whole tables around the page, add or delete rows and columns, or type a follow-up request to refine the layout with AI.",
   },
   {
-    q: "What happens if my Ollama model is not installed yet?",
-    a: "The workbench checks localhost:11434 automatically and highlights missing models in a top banner with one-click download and live MB/percentage streaming progress—no terminal required.",
+    q: "Do I need a complex terminal setup to install AI models?",
+    a: "No. UnScanMe checks for local Ollama automatically and lets you download recommended lightweight vision models right inside the app with a live progress bar.",
   },
   {
-    q: "Does any document image, PDF, or prompt leave my machine?",
-    a: "No. Image preprocessing, PDF extraction, visual canvas editing, local Ollama inference, and headless Chromium/Edge PDF rendering all run 100% locally on your hardware.",
+    q: "Which operating systems are supported?",
+    a: "UnScanMe includes native desktop installers for Windows 10/11 (64-bit .exe), macOS (Universal .dmg for Apple Silicon & Intel), and all major Linux distributions (Ubuntu, Debian, Mint, Fedora, and Arch).",
   },
 ];

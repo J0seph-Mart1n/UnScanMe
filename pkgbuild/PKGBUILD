@@ -1,13 +1,13 @@
 # Maintainer: Joseph Martin <jmkl0987@gmail.com>
-pkgname=i-hate-scans
+pkgname=unscanme
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='i hate scans: convert document images, prompts, and PDFs to editable HTML5 & vector PDF locally'
+pkgdesc='UnScanMe: convert document images, prompts, and PDFs to editable HTML5 & vector PDF locally'
 arch=('x86_64' 'aarch64')
 url='https://github.com/J0seph-Mart1n/ImgToPdf-Rust'
 license=('MIT')
-provides=('i-hate-scans')
-conflicts=('img-to-pdf' 'docforge')
+provides=('unscanme')
+conflicts=('i-hate-scans' 'img-to-pdf' 'docforge')
 depends=('webkit2gtk-4.1' 'gtk3' 'xdotool' 'xdg-desktop-portal')
 optdepends=(
   'ollama: local vision AI inference'
@@ -37,22 +37,22 @@ build() {
 }
 
 package() {
-  local app_dir="$startdir/../desktop/target/dx/i-hate-scans/release/linux/app"
+  local app_dir="$startdir/../desktop/target/dx/unscanme/release/linux/app"
 
-  if [ -f "$app_dir/i-hate-scans" ]; then
-    install -Dm755 "$app_dir/i-hate-scans" "$pkgdir/usr/lib/$pkgname/i-hate-scans"
+  if [ -f "$app_dir/unscanme" ]; then
+    install -Dm755 "$app_dir/unscanme" "$pkgdir/usr/lib/$pkgname/unscanme"
     if [ -d "$app_dir/assets" ]; then
       install -dm755 "$pkgdir/usr/lib/$pkgname/assets"
       cp -r "$app_dir/assets/." "$pkgdir/usr/lib/$pkgname/assets/"
     fi
   else
-    install -Dm755 "$startdir/../desktop/target/release/i-hate-scans" "$pkgdir/usr/lib/$pkgname/i-hate-scans"
+    install -Dm755 "$startdir/../desktop/target/release/unscanme" "$pkgdir/usr/lib/$pkgname/unscanme"
   fi
 
   install -dm755 "$pkgdir/usr/bin"
-  ln -sf "/usr/lib/$pkgname/i-hate-scans" "$pkgdir/usr/bin/i-hate-scans"
+  ln -sf "/usr/lib/$pkgname/unscanme" "$pkgdir/usr/bin/unscanme"
 
   install -Dm644 "$startdir/../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 "$startdir/i-hate-scans.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/i-hate-scans.svg"
-  install -Dm644 "$startdir/i-hate-scans.desktop" "$pkgdir/usr/share/applications/i-hate-scans.desktop"
+  install -Dm644 "$startdir/unscanme.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/unscanme.svg"
+  install -Dm644 "$startdir/unscanme.desktop" "$pkgdir/usr/share/applications/unscanme.desktop"
 }

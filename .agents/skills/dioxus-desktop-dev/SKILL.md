@@ -31,8 +31,8 @@ Confirm both exit with code `0`, zero warnings, and `Client build completed succ
 - **Fix**: Clean the crate's cached build and `dx` bundle artifacts, then rebuild:
   ```bash
   cd desktop
-  cargo clean -p i-hate-scans
-  rm -rf target/x86_64-unknown-linux-gnu/desktop-dev/build/i-hate-scans target/x86_64-unknown-linux-gnu/desktop-dev/incremental target/dx
+  cargo clean -p unscanme
+  rm -rf target/x86_64-unknown-linux-gnu/desktop-dev/build/unscanme target/x86_64-unknown-linux-gnu/desktop-dev/incremental target/dx
   dx build --desktop
   ```
 

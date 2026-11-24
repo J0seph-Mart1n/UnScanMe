@@ -1,5 +1,5 @@
-pkgbase = i-hate-scans
-	pkgdesc = i hate scans: convert document images, prompts, and PDFs to editable HTML5 & vector PDF locally
+pkgbase = unscanme
+	pkgdesc = UnScanMe: convert document images, prompts, and PDFs to editable HTML5 & vector PDF locally
 	pkgver = 0.1.0
 	pkgrel = 1
 	url = https://github.com/J0seph-Mart1n/ImgToPdf-Rust
@@ -15,10 +15,11 @@ pkgbase = i-hate-scans
 	optdepends = chromium: headless vector PDF printing
 	optdepends = wl-clipboard: Wayland clipboard Ctrl+V image paste
 	optdepends = xclip: X11 clipboard Ctrl+V image paste
-	provides = i-hate-scans
+	provides = unscanme
+	conflicts = i-hate-scans
 	conflicts = img-to-pdf
 	conflicts = docforge
 	options = !debug
 	options = !lto
 
-pkgname = i-hate-scans
+pkgname = unscanme

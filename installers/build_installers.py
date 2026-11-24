@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Builds double-clickable desktop installers:
-  1. web/public/downloads/i-hate-scans-Setup-0.1.0-x64.exe      (Win32 PE32+ GUI executable)
-  2. web/public/downloads/i-hate-scans-0.1.0-universal.dmg      (UDIF macOS disk image)
-  3. web/public/downloads/i-hate-scans-Installer-0.1.0-linux-x86_64 (Linux ELF GUI installer)
+  1. web/public/downloads/UnScanMe-Setup-0.1.0-x64.exe      (Win32 PE32+ GUI executable)
+  2. web/public/downloads/UnScanMe-0.1.0-universal.dmg      (UDIF macOS disk image)
+  3. web/public/downloads/UnScanMe-Installer-0.1.0-linux-x86_64 (Linux ELF GUI installer)
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 INSTALLERS_DIR = ROOT / "installers"
 OUT_DIR = ROOT / "web" / "public" / "downloads"
 ICON_PATH = ROOT / "desktop" / "assets" / "favicon.ico"
-LINUX_SVG_PATH = ROOT / "pkgbuild" / "i-hate-scans.svg"
-LINUX_DESKTOP_PATH = ROOT / "pkgbuild" / "i-hate-scans.desktop"
-LINUX_RELEASE_APP = ROOT / "desktop" / "target" / "dx" / "i-hate-scans" / "release" / "linux" / "app"
+LINUX_SVG_PATH = ROOT / "pkgbuild" / "unscanme.svg"
+LINUX_DESKTOP_PATH = ROOT / "pkgbuild" / "unscanme.desktop"
+LINUX_RELEASE_APP = ROOT / "desktop" / "target" / "dx" / "unscanme" / "release" / "linux" / "app"
 
-WINDOWS_EXE_NAME = "i-hate-scans-Setup-0.1.0-x64.exe"
-MACOS_DMG_NAME = "i-hate-scans-0.1.0-universal.dmg"
-LINUX_BIN_NAME = "i-hate-scans-Installer-0.1.0-linux-x86_64"
+WINDOWS_EXE_NAME = "UnScanMe-Setup-0.1.0-x64.exe"
+MACOS_DMG_NAME = "UnScanMe-0.1.0-universal.dmg"
+LINUX_BIN_NAME = "UnScanMe-Installer-0.1.0-linux-x86_64"
 
 DEF_FILES = {
     "kernel32.def": """LIBRARY kernel32.dll
@@ -61,8 +61,8 @@ ShellExecuteExW
 
 MANIFEST_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="0.1.0.0" processorArchitecture="amd64" name="IHateScans.Setup" type="win32"/>
-  <description>i hate scans Local Document Workbench Installer</description>
+  <assemblyIdentity version="0.1.0.0" processorArchitecture="amd64" name="UnScanMe.Setup" type="win32"/>
+  <description>UnScanMe Local Document Workbench Installer</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
@@ -86,17 +86,17 @@ MACOS_INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>i hate scans</string>
+  <string>UnScanMe</string>
   <key>CFBundleExecutable</key>
-  <string>i-hate-scans</string>
+  <string>unscanme</string>
   <key>CFBundleIconFile</key>
   <string>favicon.ico</string>
   <key>CFBundleIdentifier</key>
-  <string>com.ihatescans.app</string>
+  <string>com.unscanme.app</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>i hate scans</string>
+  <string>UnScanMe</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -118,27 +118,27 @@ RELEASE_API="https://api.github.com/repos/J0seph-Mart1n/ImgToPdf-Rust/releases/l
 SELF_BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
 
 if [[ "$SELF_BUNDLE" == /Volumes/* ]]; then
-  osascript -e 'display dialog "Install i hate scans to /Applications?" buttons {"Cancel", "Install"} default button "Install" with title "i hate scans Installer"' >/dev/null
-  rm -rf "/Applications/i hate scans.app"
-  cp -R "$SELF_BUNDLE" "/Applications/i hate scans.app"
-  exec "/Applications/i hate scans.app/Contents/MacOS/i-hate-scans" "$@"
+  osascript -e 'display dialog "Install UnScanMe to /Applications?" buttons {"Cancel", "Install"} default button "Install" with title "UnScanMe Installer"' >/dev/null
+  rm -rf "/Applications/UnScanMe.app"
+  cp -R "$SELF_BUNDLE" "/Applications/UnScanMe.app"
+  exec "/Applications/UnScanMe.app/Contents/MacOS/unscanme" "$@"
 fi
 
 DMG_URL="$(curl -fsSL "$RELEASE_API" 2>/dev/null | grep -Eo 'https://[^"]+\\.dmg' | head -n1 || true)"
 if [[ -n "$DMG_URL" ]]; then
-  TMP_DMG="${TMPDIR:-/tmp}/ihatescansRelease.dmg"
+  TMP_DMG="${TMPDIR:-/tmp}/UnScanMeRelease.dmg"
   curl -fL "$DMG_URL" -o "$TMP_DMG"
   MNT_DIR="$(hdiutil attach "$TMP_DMG" -nobrowse -readonly | awk '/\\/Volumes\\//{for(i=3;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); exit}')"
-  if [[ -n "$MNT_DIR" && -d "$MNT_DIR/i hate scans.app" ]]; then
-    cp -R "$MNT_DIR/i hate scans.app" "/Applications/i hate scans.app.new"
+  if [[ -n "$MNT_DIR" && -d "$MNT_DIR/UnScanMe.app" ]]; then
+    cp -R "$MNT_DIR/UnScanMe.app" "/Applications/UnScanMe.app.new"
     hdiutil detach "$MNT_DIR" -quiet || true
-    rm -rf "/Applications/i hate scans.app"
-    mv "/Applications/i hate scans.app.new" "/Applications/i hate scans.app"
-    exec open "/Applications/i hate scans.app"
+    rm -rf "/Applications/UnScanMe.app"
+    mv "/Applications/UnScanMe.app.new" "/Applications/UnScanMe.app"
+    exec open "/Applications/UnScanMe.app"
   fi
 fi
 
-osascript -e 'display dialog "Could not download i hate scans for macOS. Please check your internet connection and try again." buttons {"OK"} default button "OK" with icon caution with title "i hate scans Installer"'
+osascript -e 'display dialog "Could not download UnScanMe for macOS. Please check your internet connection and try again." buttons {"OK"} default button "OK" with icon caution with title "UnScanMe Installer"'
 exit 1
 """
 
@@ -473,12 +473,12 @@ def wrap_udif_dmg(raw_iso: bytes, out_path: pathlib.Path) -> None:
 
 def build_macos_dmg(out_path: pathlib.Path) -> pathlib.Path:
     root = _Node("", True)
-    app = _Node("i hate scans.app", True, mode=0o755)
+    app = _Node("UnScanMe.app", True, mode=0o755)
     contents = _Node("Contents", True, mode=0o755)
     macos_dir = _Node("MacOS", True, mode=0o755)
     res_dir = _Node("Resources", True, mode=0o755)
 
-    macos_dir.children.append(_Node("i-hate-scans", False, MACOS_LAUNCHER_SH.encode("utf-8"), mode=0o755))
+    macos_dir.children.append(_Node("unscanme", False, MACOS_LAUNCHER_SH.encode("utf-8"), mode=0o755))
     res_dir.children.append(_Node("favicon.ico", False, ICON_PATH.read_bytes(), mode=0o644))
     contents.children.extend(
         [
@@ -491,7 +491,7 @@ def build_macos_dmg(out_path: pathlib.Path) -> pathlib.Path:
     app.children.append(contents)
     root.children.append(app)
 
-    iso_bytes = build_iso9660_rockridge(root, "i hate scans")
+    iso_bytes = build_iso9660_rockridge(root, "UnScanMe")
     iso_check_path = INSTALLERS_DIR / "_verify_macos.iso"
     iso_check_path.write_bytes(iso_bytes)
     wrap_udif_dmg(iso_bytes, out_path)
@@ -499,36 +499,36 @@ def build_macos_dmg(out_path: pathlib.Path) -> pathlib.Path:
 
 
 def build_linux_elf_installer(out_path: pathlib.Path) -> None:
-    bin_src = LINUX_RELEASE_APP / "i-hate-scans"
+    bin_src = LINUX_RELEASE_APP / "unscanme"
     if not bin_src.is_file():
         subprocess.run(["dx", "build", "--desktop", "--release"], cwd=ROOT / "desktop", check=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         td = pathlib.Path(tmp)
-        stripped_bin = td / "i-hate-scans"
+        stripped_bin = td / "unscanme"
         shutil.copy2(bin_src, stripped_bin)
         if shutil.which("strip"):
             subprocess.run(["strip", "--strip-unneeded", str(stripped_bin)], check=False)
 
         payload_tar = td / "payload.tar.gz"
         with tarfile.open(payload_tar, mode="w:gz", compresslevel=9) as tf:
-            tf.add(stripped_bin, arcname="i-hate-scans")
+            tf.add(stripped_bin, arcname="unscanme")
             assets_dir = LINUX_RELEASE_APP / "assets"
             if assets_dir.is_dir():
                 for item in sorted(assets_dir.rglob("*")):
                     if item.is_file():
                         tf.add(item, arcname=f"assets/{item.relative_to(assets_dir).as_posix()}")
-            tf.add(LINUX_SVG_PATH, arcname="i-hate-scans.svg")
-            tf.add(LINUX_DESKTOP_PATH, arcname="i-hate-scans.desktop")
+            tf.add(LINUX_SVG_PATH, arcname="unscanme.svg")
+            tf.add(LINUX_DESKTOP_PATH, arcname="unscanme.desktop")
 
         payload_s = td / "payload.s"
         payload_s.write_text(
             '.section .rodata\n'
-            '.globl _ihs_payload_start\n'
-            '.globl _ihs_payload_end\n'
-            '_ihs_payload_start:\n'
+            '.globl _unscanme_payload_start\n'
+            '.globl _unscanme_payload_end\n'
+            '_unscanme_payload_start:\n'
             f'.incbin "{payload_tar.as_posix()}"\n'
-            '_ihs_payload_end:\n'
+            '_unscanme_payload_end:\n'
             '.section .note.GNU-stack,"",@progbits\n',
             encoding="utf-8",
         )
@@ -556,6 +556,9 @@ def main() -> None:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for obsolete in (
+        "i-hate-scans-Setup-0.1.0-x64.exe",
+        "i-hate-scans-0.1.0-universal.dmg",
+        "i-hate-scans-Installer-0.1.0-linux-x86_64",
         "DocForge-Setup-0.1.0-x64.exe",
         "DocForge-0.1.0-universal.dmg",
         "DocForge-Installer-0.1.0-linux-x86_64",

@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "i hate scans — Local Document Workbench (Image & PDF to Editable HTML5 & Vector PDF)",
+  title: "UnScanMe — Turn Scans & PDFs Into Clean, Editable Documents",
   description:
-    "Convert document images, prompts, and PDFs into editable HTML5 with a Visual Table Editor, pure-Rust crop/deskew, AI follow-up refinement, and headless Chromium vector PDF export — 100% locally.",
+    "Convert document photos, scans, and trapped PDFs into editable tables and crisp searchable vector PDFs — 100% locally on Windows, macOS, and Linux.",
 };
 
 export default function RootLayout({

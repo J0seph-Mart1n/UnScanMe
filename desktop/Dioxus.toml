@@ -1,10 +1,10 @@
 [application]
-name = "i hate scans"
+name = "UnScanMe"
 default_platform = "desktop"
 asset_dir = "assets"
 
 [web.app]
-title = "i hate scans — Local Document Workbench"
+title = "UnScanMe — Local Document Workbench"
 
 [web.resource]
 style = []
@@ -14,10 +14,10 @@ script = []
 script = []
 
 [bundle]
-identifier = "com.ihatescans.app"
-publisher = "i hate scans"
+identifier = "com.unscanme.app"
+publisher = "UnScanMe"
 icon = ["assets/favicon.ico"]
-short_description = "i hate scans: Image & PDF to Editable HTML5 & Vector PDF"
+short_description = "UnScanMe: Image & PDF to Editable HTML5 & Vector PDF"
 long_description = "Convert scanned documents, prompts, and PDFs into editable HTML5 with a visual canvas & table editor, pure-Rust crop/deskew, AI follow-up chat, and headless Chromium vector PDF export — 100% locally."
 
 [bundle.macos]

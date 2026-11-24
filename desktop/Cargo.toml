@@ -1,5 +1,5 @@
 [package]
-name = "i-hate-scans"
+name = "unscanme"
 version = "0.1.0"
 authors = ["Joseph Martin <jmkl0987@gmail.com>"]
 edition = "2021"

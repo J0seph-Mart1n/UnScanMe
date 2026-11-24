@@ -1,5 +1,5 @@
 /*
- * i hate scans Windows GUI Installer (Win32 API, zero external CRT dependencies).
+ * UnScanMe Windows GUI Installer (Win32 API, zero external CRT dependencies).
  * Compiled on Linux with clang --target=x86_64-pc-windows-msvc and linked with lld-link.
  */
 #include <stdint.h>
@@ -96,18 +96,18 @@ static void wcat(wchar_t *dst, const wchar_t *src) {
 static const char PS_INSTALLER_SCRIPT[] =
     "$ErrorActionPreference = 'Stop'\r\n"
     "$ProgressPreference = 'SilentlyContinue'\r\n"
-    "$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\\i-hate-scans'\r\n"
+    "$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\\UnScanMe'\r\n"
     "New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null\r\n"
-    "$ExePath = Join-Path $InstallDir 'i-hate-scans.exe'\r\n"
+    "$ExePath = Join-Path $InstallDir 'unscanme.exe'\r\n"
     "$ReleaseApi = 'https://api.github.com/repos/J0seph-Mart1n/ImgToPdf-Rust/releases/latest'\r\n"
-    "$Rel = Invoke-RestMethod -Uri $ReleaseApi -Headers @{ 'User-Agent' = 'i-hate-scans-Setup' }\r\n"
+    "$Rel = Invoke-RestMethod -Uri $ReleaseApi -Headers @{ 'User-Agent' = 'UnScanMe-Setup' }\r\n"
     "$Installer = $Rel.assets | Where-Object { $_.name -match '(Setup.*\\.exe|\\.msi)$' } | Select-Object -First 1\r\n"
     "if ($Installer -and $Installer.name -match '\\.msi$') {\r\n"
     "  $MsiPath = Join-Path $env:TEMP $Installer.name\r\n"
     "  Invoke-WebRequest -Uri $Installer.browser_download_url -OutFile $MsiPath\r\n"
     "  Start-Process msiexec.exe -ArgumentList \"/i `\"$MsiPath`\" /passive\" -Wait\r\n"
     "} else {\r\n"
-    "  $Bin = $Rel.assets | Where-Object { $_.name -match '(i-hate-scans|i_hate_scans).*\\.exe$' -and $_.name -notmatch 'Setup' } | Select-Object -First 1\r\n"
+    "  $Bin = $Rel.assets | Where-Object { $_.name -match 'unscanme.*\\.exe$' -and $_.name -notmatch 'Setup' } | Select-Object -First 1\r\n"
     "  if (-not $Bin) { throw 'No Windows release binary found.' }\r\n"
     "  Invoke-WebRequest -Uri $Bin.browser_download_url -OutFile $ExePath\r\n"
     "}\r\n"
@@ -116,28 +116,28 @@ static const char PS_INSTALLER_SCRIPT[] =
     "$DesktopDir = [Environment]::GetFolderPath('Desktop')\r\n"
     "foreach ($Dir in @($StartDir, $DesktopDir)) {\r\n"
     "  if ($Dir -and (Test-Path $Dir) -and (Test-Path $ExePath)) {\r\n"
-    "    $Sc = $Wsh.CreateShortcut((Join-Path $Dir 'i hate scans.lnk'))\r\n"
+    "    $Sc = $Wsh.CreateShortcut((Join-Path $Dir 'UnScanMe.lnk'))\r\n"
     "    $Sc.TargetPath = $ExePath\r\n"
     "    $Sc.WorkingDirectory = $InstallDir\r\n"
-    "    $Sc.Description = 'i hate scans — Local Document Workbench'\r\n"
+    "    $Sc.Description = 'UnScanMe — Local Document Workbench'\r\n"
     "    $Sc.Save()\r\n"
     "  }\r\n"
     "}\r\n"
-    "$RegKey = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\i-hate-scans'\r\n"
+    "$RegKey = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\UnScanMe'\r\n"
     "New-Item -Path $RegKey -Force | Out-Null\r\n"
-    "Set-ItemProperty -Path $RegKey -Name DisplayName -Value 'i hate scans'\r\n"
+    "Set-ItemProperty -Path $RegKey -Name DisplayName -Value 'UnScanMe'\r\n"
     "Set-ItemProperty -Path $RegKey -Name DisplayVersion -Value '0.1.0'\r\n"
-    "Set-ItemProperty -Path $RegKey -Name Publisher -Value 'i hate scans'\r\n"
+    "Set-ItemProperty -Path $RegKey -Name Publisher -Value 'UnScanMe'\r\n"
     "Set-ItemProperty -Path $RegKey -Name InstallLocation -Value $InstallDir\r\n"
     "Set-ItemProperty -Path $RegKey -Name UninstallString -Value \"powershell.exe -NoProfile -Command `\"Remove-Item -Recurse -Force '$InstallDir'`\"\"\r\n"
     "if (Test-Path $ExePath) { Start-Process -FilePath $ExePath }\r\n";
 
 void WINAPI WinMainCRTStartup(void) {
-    const wchar_t *title = L"i hate scans Setup (v0.1.0)";
+    const wchar_t *title = L"UnScanMe Setup (v0.1.0)";
     int choice = MessageBoxW(
         NULL,
-        L"Install i hate scans v0.1.0 on your computer?\n\n"
-        L"i hate scans will be installed to your Programs folder with Desktop and Start Menu shortcuts.",
+        L"Install UnScanMe v0.1.0 on your computer?\n\n"
+        L"UnScanMe will be installed to your Programs folder with Desktop and Start Menu shortcuts.",
         title,
         MB_OKCANCEL | MB_ICONINFORMATION
     );
@@ -162,7 +162,7 @@ void WINAPI WinMainCRTStartup(void) {
     }
 
     wcpy(scriptPath, tempDir);
-    wcat(scriptPath, L"ihatescans_setup_0_1_0.ps1");
+    wcat(scriptPath, L"unscanme_setup_0_1_0.ps1");
 
     HANDLE hFile = CreateFileW(
         scriptPath,
@@ -221,15 +221,15 @@ void WINAPI WinMainCRTStartup(void) {
     if (exitCode == 0) {
         MessageBoxW(
             NULL,
-            L"i hate scans has been installed successfully!\n\n"
-            L"You can launch i hate scans from your Desktop or Start Menu.",
+            L"UnScanMe has been installed successfully!\n\n"
+            L"You can launch UnScanMe from your Desktop or Start Menu.",
             title,
             MB_OK | MB_ICONINFORMATION
         );
     } else {
         MessageBoxW(
             NULL,
-            L"Could not download the i hate scans Windows release package.\n\n"
+            L"Could not download the UnScanMe Windows release package.\n\n"
             L"Please check your internet connection or download the release directly from GitHub Releases.",
             title,
             MB_OK | MB_ICONERROR

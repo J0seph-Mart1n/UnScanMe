@@ -2055,22 +2055,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "i-hate-scans"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "dioxus",
- "dirs",
- "image",
- "reqwest",
- "rfd",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4978,6 +4962,22 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unscanme"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "dioxus",
+ "dirs",
+ "image",
+ "reqwest",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "untrusted"

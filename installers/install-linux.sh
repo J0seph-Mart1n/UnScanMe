@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Universal cross-distro installer for i hate scans (Debian, Ubuntu, Mint, Fedora, Arch, openSUSE, etc.)
+# Universal cross-distro installer for UnScanMe (Debian, Ubuntu, Mint, Fedora, Arch, openSUSE, etc.)
 set -euo pipefail
 
 VERSION="0.1.0"
 REPO_URL="https://github.com/J0seph-Mart1n/ImgToPdf-Rust"
 RELEASE_API="https://api.github.com/repos/J0seph-Mart1n/ImgToPdf-Rust/releases/latest"
-BIN_FILE="i-hate-scans-Installer-${VERSION}-linux-x86_64"
+BIN_FILE="UnScanMe-Installer-${VERSION}-linux-x86_64"
 
 MODE="user"
 ACTION="install"
@@ -18,7 +18,7 @@ for arg in "$@"; do
       echo "Usage: $0 [--user | --system | --uninstall]"
       echo "  --user       Install for current user in ~/.local (default, no root required)"
       echo "  --system     Install system-wide in /usr/local (uses sudo)"
-      echo "  --uninstall  Remove i hate scans"
+      echo "  --uninstall  Remove UnScanMe"
       exit 0
       ;;
   esac
@@ -26,24 +26,24 @@ done
 
 if [ "$MODE" = "system" ]; then
   PREFIX="/usr/local"
-  LIB_DIR="/usr/local/lib/i-hate-scans"
+  LIB_DIR="/usr/local/lib/unscanme"
   SUDO="sudo"
 else
   PREFIX="${XDG_DATA_HOME:-$HOME/.local/share}"
   BIN_DIR="$HOME/.local/bin"
-  LIB_DIR="$PREFIX/i-hate-scans"
+  LIB_DIR="$PREFIX/unscanme"
   SUDO=""
 fi
 
 if [ "$ACTION" = "uninstall" ]; then
   if [ "$MODE" = "system" ]; then
-    $SUDO rm -rf /usr/local/lib/i-hate-scans /usr/local/bin/i-hate-scans /usr/local/bin/i-hate-scans-uninstall
-    $SUDO rm -f /usr/local/share/applications/i-hate-scans.desktop /usr/local/share/icons/hicolor/scalable/apps/i-hate-scans.svg
+    $SUDO rm -rf /usr/local/lib/unscanme /usr/local/bin/unscanme /usr/local/bin/unscanme-uninstall
+    $SUDO rm -f /usr/local/share/applications/unscanme.desktop /usr/local/share/icons/hicolor/scalable/apps/unscanme.svg
   else
-    rm -rf "$LIB_DIR" "$BIN_DIR/i-hate-scans" "$BIN_DIR/i-hate-scans-uninstall"
-    rm -f "$PREFIX/applications/i-hate-scans.desktop" "$PREFIX/icons/hicolor/scalable/apps/i-hate-scans.svg"
+    rm -rf "$LIB_DIR" "$BIN_DIR/unscanme" "$BIN_DIR/unscanme-uninstall"
+    rm -f "$PREFIX/applications/unscanme.desktop" "$PREFIX/icons/hicolor/scalable/apps/unscanme.svg"
   fi
-  echo "i hate scans uninstalled."
+  echo "UnScanMe uninstalled."
   exit 0
 fi
 
@@ -59,9 +59,9 @@ if command -v curl >/dev/null 2>&1; then
   DL_URL="$(curl -fsSL "$RELEASE_API" 2>/dev/null | grep -Eo 'https://[^"]+Installer-[^"]+-linux-[^"]+' | head -n1 || true)"
   if [ -n "$DL_URL" ]; then
     echo "Downloading $(basename "$DL_URL")..."
-    curl -fL "$DL_URL" -o "$TMP_DIR/ihs-installer"
-    chmod +x "$TMP_DIR/ihs-installer"
-    exec "$TMP_DIR/ihs-installer" "$@"
+    curl -fL "$DL_URL" -o "$TMP_DIR/unscanme-installer"
+    chmod +x "$TMP_DIR/unscanme-installer"
+    exec "$TMP_DIR/unscanme-installer" "$@"
   fi
 fi
 
@@ -84,12 +84,12 @@ fi
 cd "$REPO_ROOT/desktop"
 if command -v dx >/dev/null 2>&1; then
   dx build --desktop --release
-  APP_DIR="$REPO_ROOT/desktop/target/dx/i-hate-scans/release/linux/app"
-  BIN_SRC="$APP_DIR/i-hate-scans"
+  APP_DIR="$REPO_ROOT/desktop/target/dx/unscanme/release/linux/app"
+  BIN_SRC="$APP_DIR/unscanme"
   ASSETS_SRC="$APP_DIR/assets"
 else
   cargo build --release --locked
-  BIN_SRC="$REPO_ROOT/desktop/target/release/i-hate-scans"
+  BIN_SRC="$REPO_ROOT/desktop/target/release/unscanme"
   ASSETS_SRC=""
 fi
 
@@ -102,19 +102,19 @@ else
 fi
 
 $SUDO mkdir -p "$LIB_DIR" "$BIN_DIR" "$SHARE_DIR/applications" "$SHARE_DIR/icons/hicolor/scalable/apps"
-$SUDO install -m 755 "$BIN_SRC" "$LIB_DIR/i-hate-scans"
+$SUDO install -m 755 "$BIN_SRC" "$LIB_DIR/unscanme"
 if [ -n "$ASSETS_SRC" ] && [ -d "$ASSETS_SRC" ]; then
   $SUDO rm -rf "$LIB_DIR/assets"
   $SUDO cp -r "$ASSETS_SRC" "$LIB_DIR/assets"
 fi
-$SUDO ln -sf "$LIB_DIR/i-hate-scans" "$BIN_DIR/i-hate-scans"
+$SUDO ln -sf "$LIB_DIR/unscanme" "$BIN_DIR/unscanme"
 
-if [ -f "$REPO_ROOT/pkgbuild/i-hate-scans.svg" ]; then
-  $SUDO install -m 644 "$REPO_ROOT/pkgbuild/i-hate-scans.svg" "$SHARE_DIR/icons/hicolor/scalable/apps/i-hate-scans.svg"
+if [ -f "$REPO_ROOT/pkgbuild/unscanme.svg" ]; then
+  $SUDO install -m 644 "$REPO_ROOT/pkgbuild/unscanme.svg" "$SHARE_DIR/icons/hicolor/scalable/apps/unscanme.svg"
 fi
-if [ -f "$REPO_ROOT/pkgbuild/i-hate-scans.desktop" ]; then
-  sed "s|^Exec=.*|Exec=\"$BIN_DIR/i-hate-scans\" %f|" "$REPO_ROOT/pkgbuild/i-hate-scans.desktop" > "$TMP_DIR/i-hate-scans.desktop"
-  $SUDO install -m 644 "$TMP_DIR/i-hate-scans.desktop" "$SHARE_DIR/applications/i-hate-scans.desktop"
+if [ -f "$REPO_ROOT/pkgbuild/unscanme.desktop" ]; then
+  sed "s|^Exec=.*|Exec=\"$BIN_DIR/unscanme\" %f|" "$REPO_ROOT/pkgbuild/unscanme.desktop" > "$TMP_DIR/unscanme.desktop"
+  $SUDO install -m 644 "$TMP_DIR/unscanme.desktop" "$SHARE_DIR/applications/unscanme.desktop"
 fi
 
-echo "i hate scans installed to $BIN_DIR/i-hate-scans"
+echo "UnScanMe installed to $BIN_DIR/unscanme"

@@ -203,20 +203,64 @@ const WORKBENCH_JS: &str = r##"
     return Math.max(0, Math.min(1, v));
   }
 
-  function computeCropRect(stage, startPt, curPt) {
-    const rect = stage.getBoundingClientRect();
-    if (rect.width < 4 || rect.height < 4) return null;
-    const x1 = clamp01((Math.min(startPt.x, curPt.x) - rect.left) / rect.width);
-    const y1 = clamp01((Math.min(startPt.y, curPt.y) - rect.top) / rect.height);
-    const x2 = clamp01((Math.max(startPt.x, curPt.x) - rect.left) / rect.width);
-    const y2 = clamp01((Math.max(startPt.y, curPt.y) - rect.top) / rect.height);
-    const w = Math.max(0.02, x2 - x1);
-    const h = Math.max(0.02, y2 - y1);
+  function readCurrentCropRect(box) {
+    if (!box) return { x: 0.08, y: 0.08, w: 0.84, h: 0.84 };
+    const x = parseFloat(box.style.left);
+    const y = parseFloat(box.style.top);
+    const w = parseFloat(box.style.width);
+    const h = parseFloat(box.style.height);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) {
+      return { x: 0.08, y: 0.08, w: 0.84, h: 0.84 };
+    }
     return {
-      x: Math.min(x1, 1 - w),
-      y: Math.min(y1, 1 - h),
-      w,
-      h,
+      x: clamp01(x / 100),
+      y: clamp01(y / 100),
+      w: Math.max(0.05, clamp01(w / 100)),
+      h: Math.max(0.05, clamp01(h / 100)),
+    };
+  }
+
+  function computeUpdatedCropRect(drag, curPt) {
+    const rect = drag.stage.getBoundingClientRect();
+    if (rect.width < 4 || rect.height < 4) return null;
+    const dx = (curPt.x - drag.start.x) / rect.width;
+    const dy = (curPt.y - drag.start.y) / rect.height;
+    const init = drag.initial;
+    const minSize = 0.05;
+
+    if (drag.mode === "move") {
+      return {
+        x: Math.max(0, Math.min(1 - init.w, init.x + dx)),
+        y: Math.max(0, Math.min(1 - init.h, init.y + dy)),
+        w: init.w,
+        h: init.h,
+      };
+    }
+
+    let left = init.x;
+    let top = init.y;
+    let right = init.x + init.w;
+    let bottom = init.y + init.h;
+    const handle = drag.handle || "";
+
+    if (handle.includes("w")) {
+      left = Math.max(0, Math.min(right - minSize, init.x + dx));
+    }
+    if (handle.includes("e")) {
+      right = Math.min(1, Math.max(left + minSize, init.x + init.w + dx));
+    }
+    if (handle.includes("n")) {
+      top = Math.max(0, Math.min(bottom - minSize, init.y + dy));
+    }
+    if (handle.includes("s")) {
+      bottom = Math.min(1, Math.max(top + minSize, init.y + init.h + dy));
+    }
+
+    return {
+      x: left,
+      y: top,
+      w: Math.max(minSize, right - left),
+      h: Math.max(minSize, bottom - top),
     };
   }
 
@@ -233,10 +277,10 @@ const WORKBENCH_JS: &str = r##"
     }
   }
 
-  function emitCropFromEvent(stage, startPt, curPt, forceIpc) {
-    const cr = computeCropRect(stage, startPt, curPt);
+  function emitCropUpdate(drag, curPt, forceIpc) {
+    const cr = computeUpdatedCropRect(drag, curPt);
     if (!cr) return;
-    previewCropDom(stage, cr);
+    previewCropDom(drag.stage, cr);
     const now = Date.now();
     if (activeChannel && (forceIpc || now - lastCropEmitAt >= 80)) {
       lastCropEmitAt = now;
@@ -247,23 +291,34 @@ const WORKBENCH_JS: &str = r##"
   }
 
   function onMouseDown(e) {
-    const stage = e.target && e.target.closest ? e.target.closest("#df-crop-stage") : null;
-    if (!stage || e.button !== 0) return;
+    if (e.button !== 0 || !e.target || !e.target.closest) return;
+    const stage = e.target.closest("#df-crop-stage");
+    if (!stage) return;
+    const handleEl = e.target.closest("[data-crop-h]");
+    const box = e.target.closest(".crop-box");
+    if (!handleEl && !box) return;
     e.preventDefault();
-    cropDrag = { stage, start: { x: e.clientX, y: e.clientY } };
+    const targetBox = box || stage.querySelector(".crop-box");
+    cropDrag = {
+      stage,
+      mode: handleEl ? "resize" : "move",
+      handle: handleEl ? handleEl.getAttribute("data-crop-h") : "",
+      start: { x: e.clientX, y: e.clientY },
+      initial: readCurrentCropRect(targetBox),
+    };
   }
 
   function onMouseMove(e) {
     if (!cropDrag) return;
-    emitCropFromEvent(cropDrag.stage, cropDrag.start, { x: e.clientX, y: e.clientY }, false);
+    emitCropUpdate(cropDrag, { x: e.clientX, y: e.clientY }, false);
   }
 
   function onMouseUp(e) {
     if (!cropDrag) return;
     const dx = Math.abs(e.clientX - cropDrag.start.x);
     const dy = Math.abs(e.clientY - cropDrag.start.y);
-    if (dx >= 4 || dy >= 4) {
-      emitCropFromEvent(cropDrag.stage, cropDrag.start, { x: e.clientX, y: e.clientY }, true);
+    if (dx >= 2 || dy >= 2) {
+      emitCropUpdate(cropDrag, { x: e.clientX, y: e.clientY }, true);
     }
     cropDrag = null;
   }
@@ -820,6 +875,7 @@ pub fn Convert() -> Element {
             let restored = make_loaded_image(img.path, img.original_bytes);
             image.set(Some(restored));
             crop_mode.set(false);
+            crop_rect.set((0.08, 0.08, 0.84, 0.84));
             straighten_deg.set(0.0);
             status.set(Status::Ok("Restored original source image.".into()));
         }
@@ -1556,7 +1612,7 @@ pub fn Convert() -> Element {
                                     button {
                                         class: "btn-small",
                                         disabled: busy,
-                                        title: "Drag a rectangle on the image to crop",
+                                        title: "Show adjustable white crop box on the image",
                                         onclick: move |_| crop_mode.set(true),
                                         "Crop"
                                     }
@@ -1598,10 +1654,16 @@ pub fn Convert() -> Element {
                                                 span { class: "crop-badge",
                                                     "{(cw * 100.0).round()}% × {(ch * 100.0).round()}%"
                                                 }
+                                                for h in ["nw", "n", "ne", "e", "se", "s", "sw", "w"] {
+                                                    span {
+                                                        class: "crop-handle",
+                                                        "data-crop-h": "{h}",
+                                                    }
+                                                }
                                             }
                                         }
                                         span { class: "muted", style: "font-size:12px;",
-                                            "Click and drag across the image to select the crop area, then click Apply Crop."
+                                            "Drag the white box to move, or drag any corner/edge handle to resize, then click Apply Crop."
                                         }
                                     }
                                 } else {

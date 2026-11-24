@@ -829,7 +829,7 @@ label {
     display: inline-block;
     max-width: 100%;
     overflow: hidden;
-    cursor: crosshair;
+    cursor: default;
     user-select: none;
 }
 
@@ -842,24 +842,48 @@ label {
 
 .crop-box {
     position: absolute;
-    border: 2px solid var(--border-focus);
-    background: rgba(34, 197, 94, 0.14);
-    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
-    pointer-events: none;
-    overflow: hidden;
+    border: 2px solid #ffffff;
+    background: rgba(255, 255, 255, 0.04);
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+    pointer-events: auto;
+    cursor: move;
+    box-sizing: border-box;
 }
+
+.crop-handle {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: #ffffff;
+    border: 1.5px solid #050706;
+    border-radius: 2px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+    pointer-events: auto;
+    box-sizing: border-box;
+    z-index: 2;
+}
+
+.crop-handle[data-crop-h="nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
+.crop-handle[data-crop-h="n"]  { left: calc(50% - 6px); top: -6px; cursor: ns-resize; }
+.crop-handle[data-crop-h="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
+.crop-handle[data-crop-h="e"]  { right: -6px; top: calc(50% - 6px); cursor: ew-resize; }
+.crop-handle[data-crop-h="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.crop-handle[data-crop-h="s"]  { left: calc(50% - 6px); bottom: -6px; cursor: ns-resize; }
+.crop-handle[data-crop-h="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.crop-handle[data-crop-h="w"]  { left: -6px; top: calc(50% - 6px); cursor: ew-resize; }
 
 .crop-badge {
     position: absolute;
-    left: 4px;
-    top: 4px;
+    left: 8px;
+    top: 8px;
     padding: 1px 6px;
     border-radius: 4px;
     font-size: 11px;
     font-family: var(--font-mono);
     background: rgba(5, 7, 6, 0.85);
-    color: #bbf7d0;
-    border: 1px solid var(--border-strong);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    pointer-events: none;
 }
 
 /* Active accent button + Table Editor bar */

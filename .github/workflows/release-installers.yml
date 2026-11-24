@@ -24,11 +24,11 @@ jobs:
           cd desktop
           dx bundle --desktop --release --package-types nsis --out-dir ../dist/windows
           $exe = Get-ChildItem ../dist/windows -Filter *.exe | Select-Object -First 1
-          if ($exe) { Copy-Item $exe.FullName ../dist/windows/i-hate-scans-Setup-0.1.0-x64.exe -Force }
+          if ($exe) { Copy-Item $exe.FullName ../dist/windows/UnScanMe-Setup-0.1.0-x64.exe -Force }
       - uses: actions/upload-artifact@v4
         with:
-          name: i-hate-scans-windows-installer
-          path: dist/windows/i-hate-scans-Setup-0.1.0-x64.exe
+          name: unscanme-windows-installer
+          path: dist/windows/UnScanMe-Setup-0.1.0-x64.exe
 
   macos-installer:
     name: macOS Disk Image (.dmg)
@@ -43,11 +43,11 @@ jobs:
           cd desktop
           dx bundle --desktop --release --package-types dmg --out-dir ../dist/macos
           DMG_FILE="$(find ../dist/macos -maxdepth 1 -name '*.dmg' | head -n1)"
-          if [ -n "$DMG_FILE" ]; then cp "$DMG_FILE" ../dist/macos/i-hate-scans-0.1.0-universal.dmg; fi
+          if [ -n "$DMG_FILE" ]; then cp "$DMG_FILE" ../dist/macos/UnScanMe-0.1.0-universal.dmg; fi
       - uses: actions/upload-artifact@v4
         with:
-          name: i-hate-scans-macos-installer
-          path: dist/macos/i-hate-scans-0.1.0-universal.dmg
+          name: unscanme-macos-installer
+          path: dist/macos/UnScanMe-0.1.0-universal.dmg
 
   linux-universal-installer:
     name: Linux Universal Installer
@@ -67,11 +67,11 @@ jobs:
           cd desktop && dx build --desktop --release
           cd .. && python3 installers/build_installers.py --linux-only
           mkdir -p dist/linux
-          cp web/public/downloads/i-hate-scans-Installer-*-linux-* dist/linux/
+          cp web/public/downloads/UnScanMe-Installer-*-linux-* dist/linux/
       - uses: actions/upload-artifact@v4
         with:
-          name: i-hate-scans-linux-universal
-          path: dist/linux/i-hate-scans-Installer-*-linux-*
+          name: unscanme-linux-universal
+          path: dist/linux/UnScanMe-Installer-*-linux-*
 
   publish-release:
     name: Publish GitHub Release

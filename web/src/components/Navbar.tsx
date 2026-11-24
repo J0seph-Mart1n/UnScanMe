@@ -9,27 +9,23 @@ export function Navbar() {
           <span className="brand-badge">
             <LogoMarkIcon className="icon-sm" />
           </span>
-          <span className="brand-text">
-            <span className="brand-name">i hate scans</span>
-            <span className="brand-sub">Local Document Workbench</span>
-          </span>
+          <span className="brand-name">UnScanMe</span>
         </a>
 
         <nav className="nav-links" aria-label="Primary">
-          <a href="#workbench">Workbench</a>
-          <a href="#capabilities">Capabilities</a>
-          <a href="#pipeline">Architecture</a>
-          <a href="#install">Setup</a>
+          <a href="#features">Features</a>
+          <a href="#how-it-works">How it works</a>
+          <a href="#download">Download</a>
           <a href="#faq">FAQ</a>
         </nav>
 
         <div className="nav-actions">
           <span className="status-chip">
             <span className="status-dot" aria-hidden="true" />
-            <span>100% Local</span>
+            <span>100% Offline</span>
           </span>
-          <a href="#install" className="btn btn-primary btn-sm">
-            Get Desktop App
+          <a href="#download" className="btn btn-primary btn-sm">
+            Download Free
           </a>
         </div>
       </div>

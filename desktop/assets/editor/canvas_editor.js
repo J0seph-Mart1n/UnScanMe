@@ -1,4 +1,4 @@
-// i hate scans Visual Canvas Editor Controller
+// UnScanMe Visual Canvas Editor Controller
 // Mounted inside the main Dioxus WebView via document::eval and drives #visual-editor-frame.
 (function () {
   const FRAME_ID = "visual-editor-frame";
@@ -1204,7 +1204,7 @@
     return { start };
   }
 
-  window.__ihsEditor = {
+  window.__unscanmeEditor = {
     start: (dioxusChannel) => createController().start(dioxusChannel),
   };
 })();

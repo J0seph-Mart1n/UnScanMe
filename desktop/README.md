@@ -1,4 +1,4 @@
-# i hate scans (`i-hate-scans`)
+# UnScanMe (`unscanme`)
 
 Desktop app (Dioxus 0.7) that converts a photo or scan of a document into a PDF:
 
@@ -31,7 +31,7 @@ dx serve --desktop
 2. Check the **Preview** and fix any mistakes in **HTML source**.
 3. **Export PDF** (or **Save HTML**).
 
-Settings are saved to `~/.config/i-hate-scans/settings.json`: Ollama URL, model, prompt, `num_ctx`, temperature, max image size, and Chromium path.
+Settings are saved to `~/.config/unscanme/settings.json`: Ollama URL, model, prompt, `num_ctx`, temperature, max image size, and Chromium path.
 
 ## Code layout
 

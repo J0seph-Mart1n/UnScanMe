@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ELF_INSTALLER="$ROOT_DIR/web/public/downloads/i-hate-scans-Installer-0.1.0-linux-x86_64"
+ELF_INSTALLER="$ROOT_DIR/web/public/downloads/UnScanMe-Installer-0.1.0-linux-x86_64"
 
 if [ ! -x "$ELF_INSTALLER" ]; then
   python3 "$ROOT_DIR/installers/build_installers.py" --linux-only

@@ -1,24 +1,24 @@
 import React from "react";
-import { CAPABILITIES, PIPELINE_STEPS } from "../data/showcase-data";
+import { CAPABILITIES, WORKFLOW_STEPS } from "../data/showcase-data";
 import { CapabilityIcon } from "./Icons";
 
 export function FeatureMatrix() {
   return (
     <>
-      <section id="capabilities" className="section-block" aria-labelledby="capabilities-heading">
+      <section id="features" className="section-block" aria-labelledby="features-heading">
         <div className="container">
           <div className="section-header">
-            <p className="section-tag">Workbench Capabilities</p>
-            <h2 id="capabilities-heading">Six Integrated Tools in One Local Desktop App</h2>
+            <p className="section-tag">Features</p>
+            <h2 id="features-heading">Everything you need to turn scans into real documents</h2>
             <p>
-              Built in Rust and Dioxus 0.7 with a pure-Rust image preprocessor, interactive DOM
-              canvas, Poppler PDF extractor, and local Ollama integration.
+              Clean up photos, fix tables visually, refine text with local AI, and export lightweight
+              vector PDFs without leaving your desktop.
             </p>
           </div>
 
-          <div className="grid-3">
+          <div className="bento-grid">
             {CAPABILITIES.map((cap) => (
-              <article key={cap.id} className="card">
+              <article key={cap.id} className={`bento-card ${cap.span}`}>
                 <div className="card-head">
                   <span className="card-icon">
                     <CapabilityIcon name={cap.icon} className="icon-md" />
@@ -27,28 +27,26 @@ export function FeatureMatrix() {
                 </div>
                 <h3>{cap.title}</h3>
                 <p>{cap.description}</p>
-                <p className="card-meta">{cap.detail}</p>
               </article>
             ))}
           </div>
         </div>
       </section>
 
-      <section id="pipeline" className="section-block" aria-labelledby="pipeline-heading">
+      <section id="how-it-works" className="section-block" aria-labelledby="workflow-heading">
         <div className="container">
           <div className="section-header">
-            <p className="section-tag">Local Architecture</p>
-            <h2 id="pipeline-heading">Deterministic From Input to Searchable PDF</h2>
+            <p className="section-tag">How it works</p>
+            <h2 id="workflow-heading">From messy scan to clean PDF in three steps</h2>
             <p>
-              Every document stays on your disk and moves through an inspectable HTML5 stage before
-              printing.
+              Every document stays on your machine from initial capture to final print-ready export.
             </p>
           </div>
 
-          <ol className="pipeline-grid">
-            {PIPELINE_STEPS.map((item) => (
-              <li key={item.step} className="pipeline-card">
-                <span className="pipeline-step">{item.step}</span>
+          <ol className="workflow-grid">
+            {WORKFLOW_STEPS.map((item) => (
+              <li key={item.step} className="workflow-card">
+                <span className="workflow-step">{item.step}</span>
                 <h3>{item.title}</h3>
                 <p>{item.body}</p>
               </li>

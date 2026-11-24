@@ -45,7 +45,7 @@ pub fn VisualEditor(
             return;
         }
         let script = format!(
-            "{}\nawait window.__ihsEditor.start(dioxus);",
+            "{}\nawait window.__unscanmeEditor.start(dioxus);",
             editor::CANVAS_EDITOR_JS
         );
         let mut eval = document::eval(&script);

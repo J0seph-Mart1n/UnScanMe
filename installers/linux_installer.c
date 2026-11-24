@@ -1,5 +1,5 @@
 /*
- * i hate scans Native Linux Universal GUI & CLI Installer (x86_64 ELF).
+ * UnScanMe Native Linux Universal GUI & CLI Installer (x86_64 ELF).
  * Embeds the release binary, assets, SVG icon, and .desktop entry in .rodata.
  */
 #define _GNU_SOURCE
@@ -14,8 +14,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern const unsigned char _ihs_payload_start[];
-extern const unsigned char _ihs_payload_end[];
+extern const unsigned char _unscanme_payload_start[];
+extern const unsigned char _unscanme_payload_end[];
 
 static int has_cmd(const char *cmd) {
     const char *path = getenv("PATH");
@@ -89,7 +89,7 @@ static void gui_notify(const char *msg, int is_error) {
         char *args[] = {
             "zenity",
             is_error ? "--error" : "--info",
-            "--title=i hate scans Installer v0.1.0",
+            "--title=UnScanMe Installer v0.1.0",
             text_arg,
             NULL
         };
@@ -100,12 +100,12 @@ static void gui_notify(const char *msg, int is_error) {
             is_error ? "--error" : "--msgbox",
             (char *)msg,
             "--title",
-            "i hate scans Installer v0.1.0",
+            "UnScanMe Installer v0.1.0",
             NULL
         };
         run_cmd_quiet(args);
     } else if (has_cmd("notify-send")) {
-        char *args[] = {"notify-send", "i hate scans Installer", (char *)msg, NULL};
+        char *args[] = {"notify-send", "UnScanMe Installer", (char *)msg, NULL};
         run_cmd_quiet(args);
     }
 }
@@ -115,8 +115,8 @@ static int gui_confirm(void) {
         char *args[] = {
             "zenity",
             "--question",
-            "--title=i hate scans Installer v0.1.0",
-            "--text=Install i hate scans on your computer?",
+            "--title=UnScanMe Installer v0.1.0",
+            "--text=Install UnScanMe on your computer?",
             "--ok-label=Install",
             NULL
         };
@@ -126,9 +126,9 @@ static int gui_confirm(void) {
         char *args[] = {
             "kdialog",
             "--yesno",
-            "Install i hate scans on your computer?",
+            "Install UnScanMe on your computer?",
             "--title",
-            "i hate scans Installer v0.1.0",
+            "UnScanMe Installer v0.1.0",
             NULL
         };
         return run_cmd_quiet(args) == 0;
@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--no-launch") == 0) no_launch = 1;
         else if (strcmp(argv[i], "--no-desktop-update") == 0) update_desktop = 0;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            printf("i hate scans 0.1.0 Universal Linux Installer\n"
+            printf("UnScanMe 0.1.0 Universal Linux Installer\n"
                    "Usage: %s [--user | --system | --uninstall | --quiet | --no-launch]\n", argv[0]);
             return 0;
         }
@@ -214,28 +214,28 @@ int main(int argc, char **argv) {
     if (system_mode) {
         snprintf(bin_dir, sizeof(bin_dir), "/usr/local/bin");
         snprintf(share_dir, sizeof(share_dir), "/usr/local/share");
-        snprintf(lib_dir, sizeof(lib_dir), "/usr/local/lib/i-hate-scans");
+        snprintf(lib_dir, sizeof(lib_dir), "/usr/local/lib/unscanme");
     } else {
         snprintf(bin_dir, sizeof(bin_dir), "%s/.local/bin", home);
         if (xdg_data && *xdg_data) snprintf(share_dir, sizeof(share_dir), "%s", xdg_data);
         else snprintf(share_dir, sizeof(share_dir), "%s/.local/share", home);
-        snprintf(lib_dir, sizeof(lib_dir), "%s/i-hate-scans", share_dir);
+        snprintf(lib_dir, sizeof(lib_dir), "%s/unscanme", share_dir);
     }
 
     char exe_dest[PATH_MAX], bin_link[PATH_MAX], uninstall_bin[PATH_MAX];
     char apps_dir[PATH_MAX], icons_dir[PATH_MAX], desktop_dest[PATH_MAX], icon_dest[PATH_MAX];
-    snprintf(exe_dest, sizeof(exe_dest), "%s/i-hate-scans", lib_dir);
-    snprintf(bin_link, sizeof(bin_link), "%s/i-hate-scans", bin_dir);
-    snprintf(uninstall_bin, sizeof(uninstall_bin), "%s/i-hate-scans-uninstall", bin_dir);
+    snprintf(exe_dest, sizeof(exe_dest), "%s/unscanme", lib_dir);
+    snprintf(bin_link, sizeof(bin_link), "%s/unscanme", bin_dir);
+    snprintf(uninstall_bin, sizeof(uninstall_bin), "%s/unscanme-uninstall", bin_dir);
     snprintf(apps_dir, sizeof(apps_dir), "%s/applications", share_dir);
     snprintf(icons_dir, sizeof(icons_dir), "%s/icons/hicolor/scalable/apps", share_dir);
-    snprintf(desktop_dest, sizeof(desktop_dest), "%s/i-hate-scans.desktop", apps_dir);
-    snprintf(icon_dest, sizeof(icon_dest), "%s/i-hate-scans.svg", icons_dir);
+    snprintf(desktop_dest, sizeof(desktop_dest), "%s/unscanme.desktop", apps_dir);
+    snprintf(icon_dest, sizeof(icon_dest), "%s/unscanme.svg", icons_dir);
 
     if (uninstall) {
         char *rm_args[] = {"rm", "-rf", lib_dir, bin_link, uninstall_bin, desktop_dest, icon_dest, NULL};
         run_cmd(rm_args);
-        printf("i hate scans uninstalled from %s\n", lib_dir);
+        printf("UnScanMe uninstalled from %s\n", lib_dir);
         return 0;
     }
 
@@ -245,7 +245,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    char tmp_template[] = "/tmp/ihatescans_install_XXXXXX";
+    char tmp_template[] = "/tmp/unscanme_install_XXXXXX";
     char *tmp_dir = mkdtemp(tmp_template);
     if (!tmp_dir) {
         if (gui_session) gui_notify("Failed to create temporary extraction directory.", 1);
@@ -255,15 +255,15 @@ int main(int argc, char **argv) {
 
     char payload_gz[PATH_MAX];
     snprintf(payload_gz, sizeof(payload_gz), "%s/payload.tar.gz", tmp_dir);
-    size_t payload_size = (size_t)(_ihs_payload_end - _ihs_payload_start);
-    if (write_entire_file(payload_gz, _ihs_payload_start, payload_size, 0600) != 0) {
-        if (gui_session) gui_notify("Failed to extract i hate scans payload.", 1);
+    size_t payload_size = (size_t)(_unscanme_payload_end - _unscanme_payload_start);
+    if (write_entire_file(payload_gz, _unscanme_payload_start, payload_size, 0600) != 0) {
+        if (gui_session) gui_notify("Failed to extract UnScanMe payload.", 1);
         return 1;
     }
 
     char *tar_args[] = {"tar", "-xzf", payload_gz, "-C", tmp_dir, NULL};
     if (run_cmd_quiet(tar_args) != 0) {
-        if (gui_session) gui_notify("Failed to unpack i hate scans archive (tar).", 1);
+        if (gui_session) gui_notify("Failed to unpack UnScanMe archive (tar).", 1);
         fprintf(stderr, "Error: failed to extract embedded tar archive.\n");
         return 1;
     }
@@ -274,14 +274,14 @@ int main(int argc, char **argv) {
     mkdir_p(icons_dir, 0755);
 
     char src_bin[PATH_MAX], src_assets[PATH_MAX], src_svg[PATH_MAX], dst_assets[PATH_MAX];
-    snprintf(src_bin, sizeof(src_bin), "%s/i-hate-scans", tmp_dir);
+    snprintf(src_bin, sizeof(src_bin), "%s/unscanme", tmp_dir);
     snprintf(src_assets, sizeof(src_assets), "%s/assets", tmp_dir);
-    snprintf(src_svg, sizeof(src_svg), "%s/i-hate-scans.svg", tmp_dir);
+    snprintf(src_svg, sizeof(src_svg), "%s/unscanme.svg", tmp_dir);
     snprintf(dst_assets, sizeof(dst_assets), "%s/assets", lib_dir);
 
     char *cp_bin[] = {"install", "-m", "755", src_bin, exe_dest, NULL};
     if (run_cmd(cp_bin) != 0) {
-        if (gui_session) gui_notify("Failed to install i hate scans binary.", 1);
+        if (gui_session) gui_notify("Failed to install UnScanMe binary.", 1);
         return 1;
     }
     char *rm_assets[] = {"rm", "-rf", dst_assets, NULL};
@@ -292,7 +292,7 @@ int main(int argc, char **argv) {
     }
 
     unlink(bin_link);
-    if (symlink(exe_dest, bin_link) != 0) perror("symlink i-hate-scans");
+    if (symlink(exe_dest, bin_link) != 0) perror("symlink unscanme");
 
     char *cp_svg[] = {"install", "-m", "644", src_svg, icon_dest, NULL};
     run_cmd(cp_svg);
@@ -302,7 +302,7 @@ int main(int argc, char **argv) {
         desktop_body, sizeof(desktop_body),
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=i hate scans\n"
+        "Name=UnScanMe\n"
         "GenericName=Local Document Workbench\n"
         "Comment=Convert document images, prompts, and PDFs into editable HTML5 and vector PDFs locally\n"
         "Exec=\"%s\" %%f\n"
@@ -310,7 +310,7 @@ int main(int argc, char **argv) {
         "Terminal=false\n"
         "Categories=Office;Graphics;Utility;\n"
         "MimeType=image/png;image/jpeg;image/webp;image/bmp;image/tiff;application/pdf;\n"
-        "StartupWMClass=i-hate-scans\n",
+        "StartupWMClass=unscanme\n",
         bin_link, icon_dest
     );
     write_entire_file(desktop_dest, desktop_body, strlen(desktop_body), 0644);
@@ -321,7 +321,7 @@ int main(int argc, char **argv) {
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "rm -rf \"%s\" \"%s\" \"%s\" \"%s\" \"%s\"\n"
-        "echo \"i hate scans uninstalled.\"\n",
+        "echo \"UnScanMe uninstalled.\"\n",
         lib_dir, bin_link, uninstall_bin, desktop_dest, icon_dest
     );
     write_entire_file(uninstall_bin, uninstall_body, strlen(uninstall_body), 0755);
@@ -342,14 +342,14 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("i hate scans installed!\n"
+    printf("UnScanMe installed!\n"
            "  Binary:      %s\n"
            "  Launcher:    %s\n"
            "  Uninstaller: %s\n",
            bin_link, desktop_dest, uninstall_bin);
 
     if (gui_session) {
-        gui_notify("i hate scans installed successfully!\n\nFind it in your Applications menu or run `i-hate-scans`.", 0);
+        gui_notify("UnScanMe installed successfully!\n\nFind it in your Applications menu or run `unscanme`.", 0);
     }
 
     if (!no_launch) {

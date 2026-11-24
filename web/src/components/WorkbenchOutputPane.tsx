@@ -18,9 +18,9 @@ interface WorkbenchOutputPaneProps {
 }
 
 const OUTPUT_TABS: { id: OutputTab; label: string }[] = [
-  { id: "preview", label: "Preview" },
-  { id: "visual", label: "Visual Edit" },
-  { id: "source", label: "HTML source" },
+  { id: "preview", label: "Document" },
+  { id: "visual", label: "Table Editor" },
+  { id: "source", label: "HTML5" },
 ];
 
 export function WorkbenchOutputPane({
@@ -42,31 +42,25 @@ export function WorkbenchOutputPane({
 <html>
 <head>
   <meta charset="utf-8">
-  <style id="__df_page_setup__">
-    @page { size: ${pagePreset.cssSize}; margin: ${pagePreset.marginMm}mm; }
-  </style>
   <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    body { font-family: ${serifFont ? "Georgia, serif" : "'Inter', system-ui, sans-serif"}; color: #0f172a; }
-    table { width: 100%; border-collapse: collapse; margin: 14px 0; }
-    th, td { border: 1px solid #cbd5e1; padding: 7px 10px; text-align: left; }
-    th { background: #f1f5f9; }
-    .total-row { ${highlightTotal ? "background: #dcfce7; color: #166534; font-weight: 700;" : "font-weight: 700;"} }
+    @page { size: ${pagePreset.cssSize}; margin: ${pagePreset.marginMm}mm; }
+    body { font-family: ${serifFont ? "Georgia, serif" : "'Inter', system-ui, sans-serif"}; }
+    table { width: 100%; border-collapse: collapse; }
+    .total { ${highlightTotal ? "background: #dcfce7; color: #166534; font-weight: 700;" : "font-weight: 700;"} }
   </style>
 </head>
 <body>
   <h1>${sample.heading}</h1>
   <p>${sample.subtitle}</p>
-  <table data-df-kind="table">
+  <table>
     <thead>
       <tr><th>${sample.headers[0]}</th><th>${sample.headers[1]}</th><th>${sample.headers[2]}</th></tr>
     </thead>
     <tbody>
 ${rows.map((r) => `      <tr><td>${r.col1}</td><td>${r.col2}</td><td>${r.col3}</td></tr>`).join("\n")}
-      <tr class="total-row"><td colspan="2">${sample.totalLabel}</td><td>${sample.totalValue}</td></tr>
+      <tr class="total"><td colspan="2">${sample.totalLabel}</td><td>${sample.totalValue}</td></tr>
     </tbody>
   </table>
-  <p><small>${sample.note}</small></p>
 </body>
 </html>`;
 
@@ -121,7 +115,7 @@ ${rows.map((r) => `      <tr><td>${r.col1}</td><td>${r.col2}</td><td>${r.col3}</
             className={`btn-chip ${tableSelected ? "is-selected" : ""}`}
             onClick={onToggleTableSelect}
           >
-            {tableSelected ? "Table Selected (Drag Ready)" : "Select Table"}
+            {tableSelected ? "Move Table Active" : "Select Table"}
           </button>
         </div>
       )}
@@ -147,7 +141,7 @@ ${rows.map((r) => `      <tr><td>${r.col1}</td><td>${r.col2}</td><td>${r.col3}</
             <div className={`pdf-table-wrap ${outputTab === "visual" && tableSelected ? "is-df-selected" : ""}`}>
               {outputTab === "visual" && tableSelected && (
                 <span className="df-move-pill" aria-hidden="true">
-                  ⠿ Move Table
+                  Move Table
                 </span>
               )}
               <table>

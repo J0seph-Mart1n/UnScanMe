@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { PLATFORM_DOWNLOADS } from "../data/showcase-data";
-import { CheckIcon, CopyIcon } from "./Icons";
+import { CheckIcon, CopyIcon, DownloadIcon, MonitorIcon } from "./Icons";
 
 export function InstallSection() {
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
@@ -16,13 +16,13 @@ export function InstallSection() {
   };
 
   return (
-    <section id="install" className="section-block" aria-labelledby="install-heading">
+    <section id="download" className="section-block" aria-labelledby="download-heading">
       <div className="container">
         <div className="section-header">
           <p className="section-tag">Download</p>
-          <h2 id="install-heading">Download & Install in Two Clicks</h2>
+          <h2 id="download-heading">Get UnScanMe for your desktop</h2>
           <p>
-            Pick your operating system, download the installer, and launch it directly.
+            Native, lightweight installers — download once and launch in two clicks.
           </p>
         </div>
 
@@ -30,8 +30,13 @@ export function InstallSection() {
           {PLATFORM_DOWNLOADS.map((plat) => (
             <article key={plat.id} className="card download-card">
               <div className="download-head">
+                <div className="card-head">
+                  <span className="card-icon">
+                    <MonitorIcon className="icon-md" />
+                  </span>
+                  <span className="card-tag">{plat.subtitle}</span>
+                </div>
                 <h3>{plat.title}</h3>
-                <span className="card-tag">{plat.subtitle}</span>
               </div>
 
               <ol className="download-steps">
@@ -63,7 +68,8 @@ export function InstallSection() {
                 download={plat.fileName}
                 className="btn btn-primary download-btn"
               >
-                {plat.buttonLabel}
+                <DownloadIcon className="icon-sm" />
+                <span>{plat.buttonLabel}</span>
               </a>
             </article>
           ))}

@@ -1,6 +1,6 @@
-# i hate scans — Showcase Website (Next.js)
+# UnScanMe — Showcase Website (Next.js)
 
-Showcase and download website for the **i hate scans** (`i-hate-scans`) local AI desktop application (`../desktop`).
+Showcase and download website for the **UnScanMe** (`unscanme`) local AI desktop application (`../desktop`).
 
 ## Features Included
 

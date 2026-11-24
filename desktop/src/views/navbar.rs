@@ -28,7 +28,7 @@ pub fn Navbar() -> Element {
                         line { x1: "9", y1: "15", x2: "15", y2: "15" }
                     }
                 }
-                span { "i hate scans" }
+                span { "UnScanMe" }
                 span { class: "nav-badge", "LOCAL AI" }
             }
 
