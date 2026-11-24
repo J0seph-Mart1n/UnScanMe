@@ -221,47 +221,57 @@ export const PIPELINE_STEPS = [
   },
 ];
 
-export const OS_COMMANDS: Record<
-  OsTab,
-  { label: string; badge: string; browserNote: string; commands: string }
-> = {
-  linux: {
-    label: "Linux (Arch / Omarchy / Ubuntu)",
-    badge: "WebKitGTK + Poppler + Chromium",
-    browserNote:
-      "Auto-detects /usr/bin/chromium, google-chrome-stable, brave, wl-paste/xclip, and poppler-utils.",
-    commands: `# 1. Install desktop & PDF utilities + Ollama
-sudo pacman -S xdotool poppler wl-clipboard ollama-cuda
-sudo systemctl enable --now ollama
+export interface PlatformDownload {
+  id: OsTab;
+  title: string;
+  subtitle: string;
+  buttonLabel: string;
+  href: string;
+  fileName: string;
+  steps: [string, string];
+  commandHint?: string;
+}
 
-# 2. Build and launch from desktop/
-cd desktop && dx serve --desktop`,
+export const PLATFORM_DOWNLOADS: PlatformDownload[] = [
+  {
+    id: "windows",
+    title: "Windows",
+    subtitle: "Windows 10 & 11 (64-bit)",
+    buttonLabel: "Download i hate scans Setup (.exe)",
+    href: "/downloads/i-hate-scans-Setup-0.1.0-x64.exe",
+    fileName: "i-hate-scans-Setup-0.1.0-x64.exe",
+    steps: [
+      "Double-click i-hate-scans-Setup-0.1.0-x64.exe.",
+      "Click OK — installs with Start Menu & Desktop shortcuts.",
+    ],
   },
-  macos: {
-    label: "macOS (Apple Silicon & Intel)",
-    badge: "WKWebView + Chrome / Edge",
-    browserNote:
-      "Auto-detects Google Chrome.app, Chromium.app, Brave Browser.app, or Microsoft Edge.app.",
-    commands: `# 1. Install Ollama & optional Poppler / clipboard tools
-brew install --cask ollama
-brew install poppler pngpaste
-ollama serve &
-
-# 2. Build and launch from desktop/
-cd desktop && dx serve --desktop`,
+  {
+    id: "macos",
+    title: "macOS",
+    subtitle: "Apple Silicon & Intel",
+    buttonLabel: "Download i hate scans (.dmg)",
+    href: "/downloads/i-hate-scans-0.1.0-universal.dmg",
+    fileName: "i-hate-scans-0.1.0-universal.dmg",
+    steps: [
+      "Double-click i-hate-scans-0.1.0-universal.dmg.",
+      "Double-click i hate scans.app inside to install to Applications.",
+    ],
   },
-  windows: {
-    label: "Windows 10 & 11 (x64 / ARM64)",
-    badge: "WebView2 + Built-in MS Edge",
-    browserNote:
-      "Uses pre-installed Microsoft Edge (msedge.exe) or Chrome with normalized file:///C:/ URLs and native PowerShell clipboard.",
-    commands: `# 1. Install Ollama via Winget
-winget install Ollama.Ollama
-
-# 2. Build and launch from desktop/
-cd desktop; dx serve --desktop`,
+  {
+    id: "linux",
+    title: "Linux",
+    subtitle: "Ubuntu, Debian, Mint, Fedora & Arch",
+    buttonLabel: "Download Linux Installer",
+    href: "/downloads/i-hate-scans-Installer-0.1.0-linux-x86_64",
+    fileName: "i-hate-scans-Installer-0.1.0-linux-x86_64",
+    steps: [
+      "Allow executing in file Properties (or run the 1-line command below).",
+      "Installer pops up, installs to your app menu, and launches i hate scans.",
+    ],
+    commandHint:
+      "chmod +x ~/Downloads/i-hate-scans-Installer-0.1.0-linux-x86_64 && ~/Downloads/i-hate-scans-Installer-0.1.0-linux-x86_64",
   },
-};
+];
 
 export const FAQS = [
   {
@@ -270,11 +280,11 @@ export const FAQS = [
   },
   {
     q: "Can I import existing PDFs without running a vision AI model?",
-    a: "Yes. DocForge parses Poppler pdftotext -bbox-layout coordinates (clustering split flows into aligned HTML <table> rows), falls back to -layout or uncompressed PDF text streams offline, or lets you run Vision AI on any rasterized page when a PDF is a pure scan.",
+    a: "Yes. i hate scans parses Poppler pdftotext -bbox-layout coordinates (clustering split flows into aligned HTML <table> rows), falls back to -layout or uncompressed PDF text streams offline, or lets you run Vision AI on any rasterized page when a PDF is a pure scan.",
   },
   {
     q: "How does the Visual Editor protect my exported HTML?",
-    a: "All selection outlines, 8-point resize handles, and drag pills live inside an isolated #__df_editor_ui__ layer. Before syncing back to Rust or printing to PDF, DocForge clones the DOM and strips all editor chrome and temporary contenteditable attributes.",
+    a: "All selection outlines, 8-point resize handles, and drag pills live inside an isolated #__df_editor_ui__ layer. Before syncing back to Rust or printing to PDF, i hate scans clones the DOM and strips all editor chrome and temporary contenteditable attributes.",
   },
   {
     q: "What happens if my Ollama model is not installed yet?",

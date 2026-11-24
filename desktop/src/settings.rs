@@ -1,4 +1,4 @@
-//! Persistent application settings, stored as JSON in `~/.config/img_to_pdf/settings.json`.
+//! Persistent application settings, stored as JSON in `~/.config/i-hate-scans/settings.json`.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -104,6 +104,10 @@ impl Default for Settings {
 }
 
 fn settings_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("i-hate-scans").join("settings.json"))
+}
+
+fn legacy_settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("img_to_pdf").join("settings.json"))
 }
 
@@ -116,10 +120,11 @@ impl Settings {
         }
     }
 
-    /// Load settings from disk, falling back to defaults on any error.
+    /// Load settings from disk, falling back to legacy config path or defaults on any error.
     pub fn load() -> Self {
         let mut settings: Self = settings_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
+            .or_else(|| legacy_settings_path().and_then(|p| std::fs::read_to_string(p).ok()))
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         settings.migrate_legacy_prompt();

@@ -1,21 +1,24 @@
 [application]
+name = "i hate scans"
+default_platform = "desktop"
+asset_dir = "assets"
 
 [web.app]
+title = "i hate scans — Local Document Workbench"
 
-# HTML title tag content
-title = "img_to_pdf"
-
-# include `assets` in web platform
 [web.resource]
-
-# Additional CSS style files
 style = []
-
-# Additional JavaScript files
 script = []
 
 [web.resource.dev]
-
-# Javascript code file
-# serve: [dev-server] only
 script = []
+
+[bundle]
+identifier = "com.ihatescans.app"
+publisher = "i hate scans"
+icon = ["assets/favicon.ico"]
+short_description = "i hate scans: Image & PDF to Editable HTML5 & Vector PDF"
+long_description = "Convert scanned documents, prompts, and PDFs into editable HTML5 with a visual canvas & table editor, pure-Rust crop/deskew, AI follow-up chat, and headless Chromium vector PDF export — 100% locally."
+
+[bundle.macos]
+minimum_system_version = "11.0"

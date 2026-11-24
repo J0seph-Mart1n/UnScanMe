@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=i hate scans
+GenericName=Local Document Workbench
+Comment=Convert document images, prompts, and PDFs into editable HTML5 and vector PDFs locally
+Exec=i-hate-scans %f
+Icon=i-hate-scans
+Terminal=false
+Categories=Office;Graphics;Utility;
+MimeType=image/png;image/jpeg;image/webp;image/bmp;image/tiff;application/pdf;
+StartupWMClass=i-hate-scans
+Keywords=pdf;ocr;html;ollama;scanner;converter;i-hate-scans;

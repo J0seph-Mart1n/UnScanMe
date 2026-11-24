@@ -45,7 +45,7 @@ pub fn VisualEditor(
             return;
         }
         let script = format!(
-            "{}\nawait window.__docforgeEditor.start(dioxus);",
+            "{}\nawait window.__ihsEditor.start(dioxus);",
             editor::CANVAS_EDITOR_JS
         );
         let mut eval = document::eval(&script);

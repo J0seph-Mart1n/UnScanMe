@@ -36,7 +36,7 @@ fn main() {
     use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
 
     let window = WindowBuilder::new()
-        .with_title("Image to PDF")
+        .with_title("i hate scans")
         .with_inner_size(LogicalSize::new(1300.0, 880.0));
 
     dioxus::LaunchBuilder::desktop()

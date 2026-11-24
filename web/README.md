@@ -1,6 +1,6 @@
-# DocForge AI — SaaS Showcase Website (Next.js)
+# i hate scans — Showcase Website (Next.js)
 
-Showcase and marketing website for the **Image → HTML → PDF** local AI desktop application (`../desktop`).
+Showcase and download website for the **i hate scans** (`i-hate-scans`) local AI desktop application (`../desktop`).
 
 ## Features Included
 

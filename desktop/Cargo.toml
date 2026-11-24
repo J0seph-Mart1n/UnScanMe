@@ -1,5 +1,5 @@
 [package]
-name = "img_to_pdf"
+name = "i-hate-scans"
 version = "0.1.0"
 authors = ["Joseph Martin <jmkl0987@gmail.com>"]
 edition = "2021"

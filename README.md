@@ -1,4 +1,4 @@
-# Image → PDF (Local Vision AI)
+# i hate scans (`i-hate-scans`)
 
 A cross-platform document conversion suite that turns scanned documents and photos into editable **HTML5** and print-ready **vector PDFs** using 100% local AI models.
 

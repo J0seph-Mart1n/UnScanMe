@@ -3,6 +3,11 @@ target/
 /desktop/target/
 **/*.rs.bk
 
+# Arch packaging build artifacts
+/pkgbuild/pkg/
+/pkgbuild/src/
+/pkgbuild/*.pkg.tar.*
+
 # Next.js / Node.js
 node_modules/
 /web/node_modules/

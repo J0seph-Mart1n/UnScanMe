@@ -101,7 +101,7 @@ pub async fn html_to_pdf(chromium: &str, html: &str, output: &Path) -> Result<()
     };
 
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let work_dir = std::env::temp_dir().join(format!("img_to_pdf-{}-{stamp}", std::process::id()));
+    let work_dir = std::env::temp_dir().join(format!("i-hate-scans-{}-{stamp}", std::process::id()));
     tokio::fs::create_dir_all(&work_dir).await?;
     let html_path = work_dir.join("document.html");
     tokio::fs::write(&html_path, html).await?;

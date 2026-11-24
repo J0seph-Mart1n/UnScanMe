@@ -901,7 +901,7 @@ mod tests {
 <html><body><doc>
   <page width="612" height="792">
     <flow>
-      <block><line><word xMin="72" yMin="60" xMax="150" yMax="76">DocForge</word><word xMin="156" yMin="60" xMax="220" yMax="76">Receipt</word></line></block>
+      <block><line><word xMin="72" yMin="60" xMax="170" yMax="76">i hate scans</word><word xMin="176" yMin="60" xMax="240" yMax="76">Receipt</word></line></block>
       <block>
         <line><word xMin="72" yMin="94" xMax="96" yMax="105">Item</word></line>
         <line><word xMin="72" yMin="112" xMax="104" yMax="123">Paper</word></line>
@@ -917,7 +917,7 @@ mod tests {
 </doc></body></html>"#;
 
         let html = parse_bbox_xhtml_to_html(xhtml, &[]);
-        assert!(html.contains("<h1>DocForge Receipt</h1>"), "html:\n{html}");
+        assert!(html.contains("<h1>i hate scans Receipt</h1>"), "html:\n{html}");
         assert!(html.contains("<table>"), "html:\n{html}");
         assert!(html.contains("<th>Item</th><th>Total</th>"), "html:\n{html}");
         assert!(html.contains("<td>Paper</td><td>$12.00</td>"), "html:\n{html}");
@@ -936,14 +936,14 @@ mod tests {
 
     #[test]
     fn fallback_extracts_uncompressed_pdf_tj_strings() {
-        let pdf_bytes = b"%PDF-1.4\nBT /F1 12 Tf 72 720 Td (Hello DocForge!) Tj ET\n";
+        let pdf_bytes = b"%PDF-1.4\nBT /F1 12 Tf 72 720 Td (Hello i hate scans!) Tj ET\n";
         let extracted = extract_pdf_text_fallback(pdf_bytes);
-        assert_eq!(extracted, "Hello DocForge!");
+        assert_eq!(extracted, "Hello i hate scans!");
     }
 
     #[tokio::test]
     async fn imports_real_minimal_pdf_end_to_end() {
-        let content = b"BT /F1 18 Tf 72 720 Td (DocForge Receipt) Tj 0 -30 Td /F1 12 Tf (Item         Total) Tj 0 -18 Td (Paper        $12.00) Tj ET\n";
+        let content = b"BT /F1 18 Tf 72 720 Td (i hate scans Receipt) Tj 0 -30 Td /F1 12 Tf (Item         Total) Tj 0 -18 Td (Paper        $12.00) Tj ET\n";
         let mut pdf = Vec::new();
         pdf.extend_from_slice(b"%PDF-1.4\n");
         let o1 = pdf.len();
@@ -975,7 +975,7 @@ mod tests {
 
         assert_eq!(imported.page_count(), 1);
         let html = extract_editable_html(&imported);
-        assert!(html.contains("<h1>DocForge Receipt</h1>"), "html was:\n{html}");
+        assert!(html.contains("<h1>i hate scans Receipt</h1>"), "html was:\n{html}");
         assert!(html.contains("<table>"), "html was:\n{html}");
         assert!(html.contains("<th>Item</th><th>Total</th>"), "html was:\n{html}");
         assert!(html.contains("<td>Paper</td><td>$12.00</td>"), "html was:\n{html}");

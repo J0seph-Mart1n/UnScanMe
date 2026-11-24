@@ -1,4 +1,4 @@
-# ImgToPdf Repository Guidelines
+# i-hate-scans (`i hate scans`) Repository Guidelines
 
 ## Repository Structure
 - `desktop/`: Standalone Rust + Dioxus 0.7 desktop application (`desktop/Cargo.toml`, `desktop/Dioxus.toml`).

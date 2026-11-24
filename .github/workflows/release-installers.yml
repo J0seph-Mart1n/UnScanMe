@@ -1,0 +1,88 @@
+name: Release Multi-Platform Installers
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    name: Windows Setup Installer (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --version 0.7.10 --locked
+      - name: Bundle Windows NSIS .exe Installer
+        shell: pwsh
+        run: |
+          cd desktop
+          dx bundle --desktop --release --package-types nsis --out-dir ../dist/windows
+          $exe = Get-ChildItem ../dist/windows -Filter *.exe | Select-Object -First 1
+          if ($exe) { Copy-Item $exe.FullName ../dist/windows/i-hate-scans-Setup-0.1.0-x64.exe -Force }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i-hate-scans-windows-installer
+          path: dist/windows/i-hate-scans-Setup-0.1.0-x64.exe
+
+  macos-installer:
+    name: macOS Disk Image (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --version 0.7.10 --locked
+      - name: Bundle macOS .dmg Installer
+        run: |
+          cd desktop
+          dx bundle --desktop --release --package-types dmg --out-dir ../dist/macos
+          DMG_FILE="$(find ../dist/macos -maxdepth 1 -name '*.dmg' | head -n1)"
+          if [ -n "$DMG_FILE" ]; then cp "$DMG_FILE" ../dist/macos/i-hate-scans-0.1.0-universal.dmg; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i-hate-scans-macos-installer
+          path: dist/macos/i-hate-scans-0.1.0-universal.dmg
+
+  linux-universal-installer:
+    name: Linux Universal Installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux Desktop Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf clang
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --version 0.7.10 --locked
+      - name: Build Universal Linux ELF GUI Installer
+        run: |
+          cd desktop && dx build --desktop --release
+          cd .. && python3 installers/build_installers.py --linux-only
+          mkdir -p dist/linux
+          cp web/public/downloads/i-hate-scans-Installer-*-linux-* dist/linux/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i-hate-scans-linux-universal
+          path: dist/linux/i-hate-scans-Installer-*-linux-*
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [windows-installer, macos-installer, linux-universal-installer]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/**/*

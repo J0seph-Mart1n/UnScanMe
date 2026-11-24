@@ -29,7 +29,7 @@ export default function ShowcasePage() {
             </h1>
 
             <p className="hero-lead">
-              DocForge pairs local Ollama vision models and Poppler BBox extraction with a visual
+              i hate scans pairs local Ollama vision models and Poppler BBox extraction with a visual
               canvas editor, interactive table controls, pure-Rust crop/deskew, and AI follow-up
               refinement — without sending a single byte to the cloud.
             </p>

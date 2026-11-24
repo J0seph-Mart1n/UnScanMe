@@ -10,7 +10,7 @@ export function Navbar() {
             <LogoMarkIcon className="icon-sm" />
           </span>
           <span className="brand-text">
-            <span className="brand-name">DocForge</span>
+            <span className="brand-name">i hate scans</span>
             <span className="brand-sub">Local Document Workbench</span>
           </span>
         </a>

@@ -1,105 +1,72 @@
 "use client";
 
-import React, { useRef, useState } from "react";
-import { OS_COMMANDS, type OsTab } from "../data/showcase-data";
+import React, { useState } from "react";
+import { PLATFORM_DOWNLOADS } from "../data/showcase-data";
 import { CheckIcon, CopyIcon } from "./Icons";
 
-const OS_KEYS: { id: OsTab; label: string }[] = [
-  { id: "linux", label: "Linux" },
-  { id: "macos", label: "macOS" },
-  { id: "windows", label: "Windows" },
-];
-
 export function InstallSection() {
-  const [osTab, setOsTab] = useState<OsTab>("linux");
-  const [copied, setCopied] = useState<boolean>(false);
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
 
-  const handleCopy = () => {
+  const copyCmd = (cmd: string) => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(OS_COMMANDS[osTab].commands);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      navigator.clipboard.writeText(cmd);
+      setCopiedCmd(cmd);
+      setTimeout(() => setCopiedCmd(null), 2000);
     }
   };
-
-  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-    e.preventDefault();
-    const next =
-      e.key === "ArrowRight"
-        ? (index + 1) % OS_KEYS.length
-        : (index - 1 + OS_KEYS.length) % OS_KEYS.length;
-    setOsTab(OS_KEYS[next].id);
-    tabRefs.current[next]?.focus();
-  };
-
-  const active = OS_COMMANDS[osTab];
 
   return (
     <section id="install" className="section-block" aria-labelledby="install-heading">
       <div className="container">
         <div className="section-header">
-          <p className="section-tag">Cross-Platform Desktop</p>
-          <h2 id="install-heading">Run Natively on Linux, macOS & Windows</h2>
+          <p className="section-tag">Download</p>
+          <h2 id="install-heading">Download & Install in Two Clicks</h2>
           <p>
-            Zero Electron overhead. Automatically locates Chromium, Chrome, Brave, or Microsoft
-            Edge plus system clipboard and Poppler helpers.
+            Pick your operating system, download the installer, and launch it directly.
           </p>
         </div>
 
-        <div className="install-card">
-          <div className="install-top">
-            <div className="wb-tabs" role="tablist" aria-label="Operating system setup">
-              {OS_KEYS.map((item, idx) => (
-                <button
-                  key={item.id}
-                  ref={(el) => {
-                    tabRefs.current[idx] = el;
-                  }}
-                  id={`os-tab-${item.id}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={osTab === item.id}
-                  aria-controls={`os-panel-${item.id}`}
-                  tabIndex={osTab === item.id ? 0 : -1}
-                  className={`wb-tab ${osTab === item.id ? "is-active" : ""}`}
-                  onClick={() => setOsTab(item.id)}
-                  onKeyDown={(e) => handleTabKeyDown(e, idx)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <span className="status-chip">{active.badge}</span>
-          </div>
+        <div className="grid-3">
+          {PLATFORM_DOWNLOADS.map((plat) => (
+            <article key={plat.id} className="card download-card">
+              <div className="download-head">
+                <h3>{plat.title}</h3>
+                <span className="card-tag">{plat.subtitle}</span>
+              </div>
 
-          <div
-            id={`os-panel-${osTab}`}
-            role="tabpanel"
-            aria-labelledby={`os-tab-${osTab}`}
-            className="install-panel"
-          >
-            <div>
-              <h3>{active.label}</h3>
-              <p>{active.browserNote}</p>
-            </div>
+              <ol className="download-steps">
+                {plat.steps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
 
-            <div className="terminal-wrap">
-              <pre className="terminal-box">{active.commands}</pre>
-              <button
-                type="button"
-                className="btn btn-sm terminal-copy"
-                onClick={handleCopy}
+              {plat.commandHint && (
+                <div className="download-cmd">
+                  <code>{plat.commandHint}</code>
+                  <button
+                    type="button"
+                    className="btn-chip"
+                    onClick={() => copyCmd(plat.commandHint!)}
+                    aria-label="Copy Linux install command"
+                  >
+                    {copiedCmd === plat.commandHint ? (
+                      <CheckIcon className="icon-xs" />
+                    ) : (
+                      <CopyIcon className="icon-xs" />
+                    )}
+                  </button>
+                </div>
+              )}
+
+              <a
+                href={plat.href}
+                download={plat.fileName}
+                className="btn btn-primary download-btn"
               >
-                {copied ? <CheckIcon className="icon-xs" /> : <CopyIcon className="icon-xs" />}
-                <span>{copied ? "Copied" : "Copy"}</span>
-              </button>
-              <span className="sr-only" role="status" aria-live="polite">
-                {copied ? "Install commands copied to clipboard." : ""}
-              </span>
-            </div>
-          </div>
+                {plat.buttonLabel}
+              </a>
+            </article>
+          ))}
         </div>
       </div>
     </section>

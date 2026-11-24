@@ -60,7 +60,7 @@ export function FaqSection() {
       <footer className="footer">
         <div className="container footer-inner">
           <div>
-            <strong>DocForge</strong> — Rust + Dioxus 0.7 Desktop Document Workbench
+            <strong>i hate scans</strong> — Rust + Dioxus 0.7 Desktop Document Workbench
           </div>
           <div className="footer-meta">
             <span>Ollama Vision AI</span>
