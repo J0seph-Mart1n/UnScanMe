@@ -46,7 +46,7 @@ export function WorkbenchOutputPane({
     @page { size: ${pagePreset.cssSize}; margin: ${pagePreset.marginMm}mm; }
     body { font-family: ${serifFont ? "Georgia, serif" : "'Inter', system-ui, sans-serif"}; }
     table { width: 100%; border-collapse: collapse; }
-    .total { ${highlightTotal ? "background: #dcfce7; color: #166534; font-weight: 700;" : "font-weight: 700;"} }
+    .total { ${highlightTotal ? "background: #ecfccb; color: #283819; font-weight: 700;" : "font-weight: 700;"} }
   </style>
 </head>
 <body>

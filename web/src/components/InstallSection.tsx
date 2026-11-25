@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { PLATFORM_DOWNLOADS } from "../data/showcase-data";
-import { CheckIcon, CopyIcon, DownloadIcon, MonitorIcon } from "./Icons";
+import { ArrowDownRightIcon, CheckIcon, CopyIcon, MonitorIcon } from "./Icons";
 
 export function InstallSection() {
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
@@ -16,27 +16,28 @@ export function InstallSection() {
   };
 
   return (
-    <section id="download" className="section-block" aria-labelledby="download-heading">
+    <section id="download" className="download-section" aria-labelledby="download-heading">
       <div className="container">
-        <div className="section-header">
-          <p className="section-tag">Download</p>
-          <h2 id="download-heading">Get UnScanMe for your desktop</h2>
+        <div className="section-center-head">
+          <p className="eyebrow-muted">Desktop Installers</p>
+          <h2 id="download-heading">Get UnScanMe for your computer</h2>
           <p>
-            Native, lightweight installers — download once and launch in two clicks.
+            Lightweight, self-contained native installers — no cloud sign-in or subscription
+            required.
           </p>
         </div>
 
-        <div className="grid-3">
+        <div className="download-grid">
           {PLATFORM_DOWNLOADS.map((plat) => (
-            <article key={plat.id} className="card download-card">
-              <div className="download-head">
-                <div className="card-head">
-                  <span className="card-icon">
-                    <MonitorIcon className="icon-md" />
-                  </span>
-                  <span className="card-tag">{plat.subtitle}</span>
+            <article key={plat.id} className="download-card">
+              <div className="download-card-head">
+                <span className="download-icon-badge" aria-hidden="true">
+                  <MonitorIcon className="icon-md" />
+                </span>
+                <div>
+                  <h3>{plat.title}</h3>
+                  <span className="download-sub">{plat.subtitle}</span>
                 </div>
-                <h3>{plat.title}</h3>
               </div>
 
               <ol className="download-steps">
@@ -66,10 +67,12 @@ export function InstallSection() {
               <a
                 href={plat.href}
                 download={plat.fileName}
-                className="btn btn-primary download-btn"
+                className="split-cta split-cta-lime-full"
               >
-                <DownloadIcon className="icon-sm" />
-                <span>{plat.buttonLabel}</span>
+                <span className="split-cta-label">{plat.buttonLabel}</span>
+                <span className="split-cta-icon">
+                  <ArrowDownRightIcon className="icon-xs" />
+                </span>
               </a>
             </article>
           ))}

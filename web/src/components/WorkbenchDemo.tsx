@@ -9,7 +9,7 @@ import {
   type SampleId,
   type TableRowItem,
 } from "../data/showcase-data";
-import { SparklesIcon } from "./Icons";
+import { LogoMarkIcon, SparklesIcon } from "./Icons";
 import { WorkbenchOutputPane } from "./WorkbenchOutputPane";
 
 export function WorkbenchDemo() {
@@ -56,28 +56,70 @@ export function WorkbenchDemo() {
     setRefineText("");
   };
 
-  const paperTilt = deskewed ? 0 : -1.3;
+  const paperTilt = deskewed ? 0 : -1.2;
 
   return (
-    <section id="preview" className="preview-section" aria-labelledby="preview-heading">
-      <div className="container">
-        <h2 id="preview-heading" className="sr-only">
-          Interactive Product Preview
-        </h2>
+    <div id="preview" className="workbench-shell" aria-label="UnScanMe interactive preview">
+      <div className="app-window">
+        <aside className="app-sidebar" aria-label="Workspace navigation">
+          <div className="app-sidebar-brand">
+            <LogoMarkIcon className="icon-xs lime-dot" />
+            <span>UnScanMe Studio</span>
+          </div>
 
-        <div className="app-window">
+          <div className="sidebar-group">
+            <span className="sidebar-label">Samples</span>
+            {(Object.keys(SAMPLES) as SampleId[]).map((id) => (
+              <button
+                key={id}
+                type="button"
+                className={`sidebar-item ${sampleId === id ? "is-active" : ""}`}
+                onClick={() => handleSampleChange(id)}
+              >
+                {SAMPLES[id].shortLabel}
+              </button>
+            ))}
+          </div>
+
+          <div className="sidebar-group">
+            <span className="sidebar-label">Output Mode</span>
+            <button
+              type="button"
+              className={`sidebar-item ${outputTab === "preview" ? "is-active" : ""}`}
+              onClick={() => setOutputTab("preview")}
+            >
+              Document
+            </button>
+            <button
+              type="button"
+              className={`sidebar-item ${outputTab === "visual" ? "is-active" : ""}`}
+              onClick={() => setOutputTab("visual")}
+            >
+              Table Editor
+            </button>
+            <button
+              type="button"
+              className={`sidebar-item ${outputTab === "source" ? "is-active" : ""}`}
+              onClick={() => setOutputTab("source")}
+            >
+              Clean HTML5
+            </button>
+          </div>
+
+          <div className="sidebar-status">
+            <span className="status-dot" aria-hidden="true" />
+            <span>Ollama · Local GPU</span>
+          </div>
+        </aside>
+
+        <div className="app-main">
           <div className="window-chrome">
-            <div className="window-dots" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </div>
-
             <div className="window-title">
-              UnScanMe — <span>{sample.fileName}</span> · Local AI
+              <span>{sample.fileName}</span>
+              <span className="window-sub"> · {sample.pdfSize}</span>
             </div>
 
-            <div className="sample-switcher" role="group" aria-label="Sample document">
+            <div className="sample-switcher-mobile" role="group" aria-label="Sample document">
               {(Object.keys(SAMPLES) as SampleId[]).map((id) => (
                 <button
                   key={id}
@@ -89,6 +131,10 @@ export function WorkbenchDemo() {
                 </button>
               ))}
             </div>
+
+            <a href="#download" className="window-export-badge">
+              Quick Export PDF
+            </a>
           </div>
 
           <div className="wb-grid">
@@ -108,17 +154,14 @@ export function WorkbenchDemo() {
                     className={`btn-chip ${cropActive ? "is-selected" : ""}`}
                     onClick={() => setCropActive((v) => !v)}
                   >
-                    {cropActive ? "Crop Region On" : "Crop Region"}
+                    {cropActive ? "Crop Box On" : "Crop Box"}
                   </button>
                 </div>
               </div>
 
               <div className="wb-pane-body">
                 <div className="scan-surface">
-                  <div
-                    className="scan-page"
-                    style={{ transform: `rotate(${paperTilt}deg)` }}
-                  >
+                  <div className="scan-page" style={{ transform: `rotate(${paperTilt}deg)` }}>
                     {cropActive && (
                       <div className="scan-crop-frame" aria-hidden="true">
                         <span className="crop-handle h-nw" />
@@ -151,7 +194,7 @@ export function WorkbenchDemo() {
                         ))}
                       </tbody>
                     </table>
-                    <p className="scan-foot">Paste with Ctrl+V or drag &amp; drop</p>
+                    <p className="scan-foot">Drag white box handles to resize capture area</p>
                   </div>
                 </div>
               </div>
@@ -187,7 +230,7 @@ export function WorkbenchDemo() {
             >
               <span className="wb-refine-label">
                 <SparklesIcon className="icon-xs" />
-                <span>Ask AI to refine</span>
+                <span>Refine AI</span>
               </span>
               <label htmlFor="refine-demo-input" className="sr-only">
                 Refinement instruction
@@ -197,7 +240,7 @@ export function WorkbenchDemo() {
                 type="text"
                 value={refineText}
                 onChange={(e) => setRefineText(e.target.value)}
-                placeholder="Ask AI to adjust formatting (e.g., Add warranty row)..."
+                placeholder="Ask local AI to tweak layout (e.g., Add warranty row)..."
               />
               <div className="wb-refine-presets">
                 {REFINE_PRESETS.map((preset) => (
@@ -211,7 +254,7 @@ export function WorkbenchDemo() {
                   </button>
                 ))}
               </div>
-              <button type="submit" className="btn btn-primary btn-sm">
+              <button type="submit" className="btn-lime-sm">
                 Apply
               </button>
             </form>
@@ -221,6 +264,6 @@ export function WorkbenchDemo() {
           </div>
         </div>
       </div>
-    </section>
+    </div>
   );
 }

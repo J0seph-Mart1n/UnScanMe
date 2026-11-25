@@ -1,8 +1,7 @@
 export type SampleId = "invoice" | "lab" | "research";
 export type OutputTab = "preview" | "visual" | "source";
-export type OsTab = "linux" | "macos" | "windows";
+export type OsTab = "windows" | "macos" | "linux";
 export type PagePresetId = "a4-portrait" | "a4-landscape" | "letter-portrait";
-export type BentoSpan = "span-4" | "span-3" | "span-2";
 
 export type CapabilityIconName =
   | "pdf"
@@ -11,6 +10,13 @@ export type CapabilityIconName =
   | "crop"
   | "paste"
   | "page";
+
+export interface NavDropdownItem {
+  title: string;
+  description: string;
+  href: string;
+  download?: string;
+}
 
 export interface TableRowItem {
   col1: string;
@@ -42,32 +48,89 @@ export interface PagePreset {
   marginMm: number;
 }
 
-export interface MetricItem {
-  value: string;
-  label: string;
-}
-
-export interface BentoFeature {
+export interface TestimonialItem {
   id: string;
-  tag: string;
-  title: string;
-  description: string;
-  icon: CapabilityIconName;
-  span: BentoSpan;
+  name: string;
+  initials: string;
+  role: string;
+  org: string;
+  category: string;
+  quote: string;
 }
 
 export interface WorkflowStep {
   step: string;
   title: string;
   body: string;
+  icon: "paste" | "table" | "rocket";
 }
 
-export const METRICS: MetricItem[] = [
-  { value: "100% Local", label: "Zero cloud uploads or API keys" },
-  { value: "< 50 KB", label: "Crisp, searchable vector PDFs" },
-  { value: "3 Platforms", label: "Native Windows, macOS & Linux" },
-  { value: "$0 Forever", label: "Free personal desktop edition" },
+export interface PlatformDownload {
+  id: OsTab;
+  title: string;
+  subtitle: string;
+  buttonLabel: string;
+  href: string;
+  fileName: string;
+  steps: [string, string];
+  commandHint?: string;
+}
+
+export const NAV_FEATURES: NavDropdownItem[] = [
+  {
+    title: "Guided Scan Cleanup",
+    description: "White-box crop, 90° rotate & auto-deskew in Rust",
+    href: "#features",
+  },
+  {
+    title: "Interactive Table Editor",
+    description: "Edit cells inline, add rows & drag whole tables",
+    href: "#preview",
+  },
+  {
+    title: "PDF Layout Recovery",
+    description: "Unlock trapped PDFs offline or via local Vision AI",
+    href: "#features",
+  },
+  {
+    title: "Refine with Local AI",
+    description: "Conversational styling & HTML5 edits on your GPU",
+    href: "#how-it-works",
+  },
 ];
+
+export const NAV_DOWNLOADS: NavDropdownItem[] = [
+  {
+    title: "Windows Setup (.exe)",
+    description: "Windows 10 & 11 · 64-bit native installer",
+    href: "/downloads/UnScanMe-Setup-0.1.0-x64.exe",
+    download: "UnScanMe-Setup-0.1.0-x64.exe",
+  },
+  {
+    title: "macOS Universal (.dmg)",
+    description: "Apple Silicon & Intel · Drag-free app installer",
+    href: "/downloads/UnScanMe-0.1.0-universal.dmg",
+    download: "UnScanMe-0.1.0-universal.dmg",
+  },
+  {
+    title: "Linux Installer",
+    description: "Ubuntu, Debian, Mint, Fedora & Arch · 64-bit ELF",
+    href: "/downloads/UnScanMe-Installer-0.1.0-linux-x86_64",
+    download: "UnScanMe-Installer-0.1.0-linux-x86_64",
+  },
+];
+
+export const MARQUEE_ITEMS: string[] = [
+  "Local Ollama Vision",
+  "Poppler BBox Tables",
+  "Pure-Rust Auto-Deskew",
+  "Interactive Table Editor",
+  "Searchable Vector PDFs",
+  "100% Offline Privacy",
+];
+
+export const STATEMENT_TEXT =
+  "Modern teams use UnScanMe to rescue locked scans and PDFs, blending fast local vision models with an interactive visual editor so every document is clean, editable, and print-ready without touching the cloud.";
 
 export const PAGE_PRESETS: Record<PagePresetId, PagePreset> = {
   "a4-portrait": {
@@ -96,8 +159,8 @@ export const SAMPLES: Record<SampleId, SampleDoc> = {
     shortLabel: "Invoice",
     title: "Engineering Invoice",
     fileName: "scan_invoice_2048.jpg",
-    scanSize: "3.8 MB JPEG Scan",
-    pdfSize: "42 KB Vector PDF",
+    scanSize: "3.8 MB Scan",
+    pdfSize: "42 KB PDF",
     pdfPages: 2,
     heading: "INVOICE #INV-2026-089",
     subtitle: "Apex Robotics Lab · Issued Nov 18, 2026 · Net 15",
@@ -116,8 +179,8 @@ export const SAMPLES: Record<SampleId, SampleDoc> = {
     shortLabel: "Lab Report",
     title: "Clinical Lab Report",
     fileName: "pathology_panel_scan.png",
-    scanSize: "5.1 MB PNG Scan",
-    pdfSize: "48 KB Vector PDF",
+    scanSize: "5.1 MB Scan",
+    pdfSize: "48 KB PDF",
     pdfPages: 3,
     heading: "COMPREHENSIVE METABOLIC PANEL",
     subtitle: "Patient ID: #8841-A · Specimen: Venous Blood · Local Pipeline",
@@ -136,8 +199,8 @@ export const SAMPLES: Record<SampleId, SampleDoc> = {
     shortLabel: "Benchmark",
     title: "Benchmark Table",
     fileName: "paper_page4_photo.webp",
-    scanSize: "2.9 MB Camera Photo",
-    pdfSize: "38 KB Vector PDF",
+    scanSize: "2.9 MB Photo",
+    pdfSize: "38 KB PDF",
     pdfPages: 4,
     heading: "Table 3: Local Document Reconstruction",
     subtitle: "Evaluated on 4 GB Laptop GPU · Fully Offline",
@@ -159,60 +222,46 @@ export const REFINE_PRESETS = [
   "Switch to serif",
 ] as const;
 
-export const CAPABILITIES: BentoFeature[] = [
+export const TESTIMONIALS: TestimonialItem[] = [
   {
-    id: "table-editor",
-    tag: "Visual Editing",
-    title: "Interactive Table & Canvas Editor",
-    description:
-      "Click any cell to edit text, drag whole tables cleanly across the page, add or remove rows and columns, and undo up to 50 steps.",
-    icon: "table",
-    span: "span-4",
+    id: "engineering",
+    name: "Michael Torres",
+    initials: "MT",
+    role: "Head of Operations",
+    org: "Apex Robotics Lab",
+    category: "Engineering Labs",
+    quote:
+      "We used to retype vendor spec sheets and calibration tables by hand every week. UnScanMe turns crooked phone photos into editable tables and sub-50 KB vector PDFs completely offline.",
   },
   {
-    id: "image-prep",
-    tag: "Image Cleanup",
-    title: "Smart Crop & Auto-Deskew",
-    description:
-      "Drag the white crop frame to isolate regions and straighten crooked phone photos in one click.",
-    icon: "crop",
-    span: "span-2",
+    id: "clinical",
+    name: "Amanda Chen",
+    initials: "AC",
+    role: "Clinical Informatics Lead",
+    org: "Harborview Pathology",
+    category: "Clinical Teams",
+    quote:
+      "Patient forms cannot touch external APIs. Running local Ollama vision plus instant Poppler table extraction right on our workstations gives us clean digital records with zero cloud exposure.",
   },
   {
-    id: "clipboard-dnd",
-    tag: "Fast Capture",
-    title: "Instant Paste & Drop",
-    description:
-      "Paste screenshots straight from your clipboard (Ctrl+V) or drop scans and multi-page PDFs anywhere.",
-    icon: "paste",
-    span: "span-2",
+    id: "legal",
+    name: "David Patterson",
+    initials: "DP",
+    role: "Managing Partner",
+    org: "Northbridge Counsel",
+    category: "Legal & Finance",
+    quote:
+      "Being able to crop a scanned exhibit with the white resize box, adjust broken columns in the visual editor, and print a searchable PDF saved our paralegals hours on every closing.",
   },
   {
-    id: "pdf-import",
-    tag: "Document Recovery",
-    title: "PDF-to-Editable-HTML Import",
-    description:
-      "Unlock trapped PDFs instantly with offline table layout recovery, or run local Vision AI on scanned pages without retyping a word.",
-    icon: "pdf",
-    span: "span-4",
-  },
-  {
-    id: "refine-ai",
-    tag: "Follow-Up Prompts",
-    title: "Refine with Local AI",
-    description:
-      "Ask AI in plain English to reformat tables, highlight totals, or adjust typography while keeping embedded images intact.",
-    icon: "chat",
-    span: "span-3",
-  },
-  {
-    id: "page-setup",
-    tag: "Page Setup",
-    title: "Print-Ready Vector PDFs",
-    description:
-      "Choose A4, Letter, or Legal paper sizes, Portrait or Landscape orientation, and exact margins for crisp vector export.",
-    icon: "page",
-    span: "span-3",
+    id: "research",
+    name: "Elena Rostova",
+    initials: "ER",
+    role: "ML Systems Researcher",
+    org: "OpenBench Institute",
+    category: "Academic Research",
+    quote:
+      "Other tools dump scrambled plain text. UnScanMe reconstructs real semantic HTML tables we can drag, tweak in a sentence with AI, and archive cleanly for our lab notebooks.",
   },
 ];
 
@@ -220,30 +269,22 @@ export const WORKFLOW_STEPS: WorkflowStep[] = [
   {
     step: "01",
     title: "Drop or paste any scan",
-    body: "Drag in a photo, scanned image, or existing PDF — or press Ctrl+V to paste a screenshot directly.",
+    body: "Drag in a camera photo, crooked scan, or locked multi-page PDF — or press Ctrl+V to paste a screenshot straight from your clipboard.",
+    icon: "paste",
   },
   {
     step: "02",
-    title: "Edit text, tables & layout",
-    body: "Clean up crooked scans, edit cells inline, rearrange tables visually, or refine formatting with AI.",
+    title: "Clean up & edit visually",
+    body: "Use the draggable white crop frame and one-click auto-deskew, edit table cells inline, drag whole tables, or ask local AI to refine styling.",
+    icon: "table",
   },
   {
     step: "03",
     title: "Export a crisp vector PDF",
-    body: "Pick your paper size and margins, then export a lightweight, 100% searchable PDF in seconds.",
+    body: "Set your A4 or Letter margins from the top toolbar and export a lightweight, 100% searchable vector PDF in seconds.",
+    icon: "rocket",
   },
 ];
-
-export interface PlatformDownload {
-  id: OsTab;
-  title: string;
-  subtitle: string;
-  buttonLabel: string;
-  href: string;
-  fileName: string;
-  steps: [string, string];
-  commandHint?: string;
-}
 
 export const PLATFORM_DOWNLOADS: PlatformDownload[] = [
   {
@@ -289,22 +330,22 @@ export const PLATFORM_DOWNLOADS: PlatformDownload[] = [
 export const FAQS = [
   {
     q: "Does UnScanMe send my documents or scans to the cloud?",
-    a: "Never. Every step — image crop and deskew, PDF text extraction, table editing, local Ollama vision processing, and vector PDF generation — runs 100% offline on your own computer.",
+    a: "Never. Every step — white-box cropping, auto-deskew, PDF text extraction, table editing, local Ollama vision processing, and vector PDF rendering — runs 100% offline on your own machine.",
   },
   {
     q: "What file formats can I import and export?",
-    a: "You can paste screenshots from your clipboard or drop PNG, JPEG, WebP, TIFF, BMP, and PDF files. UnScanMe exports clean HTML5 and lightweight, searchable vector PDFs.",
+    a: "Paste screenshots directly from your clipboard or drop PNG, JPEG, WebP, TIFF, BMP, and PDF files. UnScanMe exports clean semantic HTML5 and lightweight, searchable vector PDFs.",
   },
   {
     q: "Can I edit tables and fix wrong text after scanning?",
-    a: "Yes. Switch to the Table Editor to click and edit any cell, drag whole tables around the page, add or delete rows and columns, or type a follow-up request to refine the layout with AI.",
+    a: "Yes. Switch to the Table Editor to click and edit any cell, drag whole tables cleanly, add or delete rows and columns, or enter a plain-English request to refine styles with local AI.",
   },
   {
     q: "Do I need a complex terminal setup to install AI models?",
-    a: "No. UnScanMe checks for local Ollama automatically and lets you download recommended lightweight vision models right inside the app with a live progress bar.",
+    a: "No. UnScanMe checks localhost Ollama automatically and lets you download lightweight vision models directly inside the app with live progress.",
   },
   {
     q: "Which operating systems are supported?",
-    a: "UnScanMe includes native desktop installers for Windows 10/11 (64-bit .exe), macOS (Universal .dmg for Apple Silicon & Intel), and all major Linux distributions (Ubuntu, Debian, Mint, Fedora, and Arch).",
+    a: "UnScanMe provides native desktop installers for Windows 10/11 (64-bit .exe), macOS (Universal .dmg for Apple Silicon & Intel), and all major Linux distributions (Ubuntu, Debian, Mint, Fedora, and Arch).",
   },
 ];

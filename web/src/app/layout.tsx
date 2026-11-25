@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "UnScanMe — Turn Scans & PDFs Into Clean, Editable Documents",
+  title: "UnScanMe — Unscan Faster, Edit with Confidence",
   description:
-    "Convert document photos, scans, and trapped PDFs into editable tables and crisp searchable vector PDFs — 100% locally on Windows, macOS, and Linux.",
+    "Turn document photos, crooked scans, and locked PDFs into clean editable documents and searchable vector PDFs — 100% locally on Windows, macOS, and Linux.",
 };
 
 export default function RootLayout({
