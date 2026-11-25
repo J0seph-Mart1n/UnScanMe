@@ -1,77 +1,91 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
   <defs>
     <linearGradient id="skyGrad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#f2fafd" />
-      <stop offset="32%" stop-color="#ffffff" />
-      <stop offset="68%" stop-color="#f7fcfe" />
-      <stop offset="100%" stop-color="#d7eef4" />
+      <stop offset="0%" stop-color="#e3f1c5" />
+      <stop offset="28%" stop-color="#f3fae3" />
+      <stop offset="52%" stop-color="#f8fcf0" />
+      <stop offset="76%" stop-color="#eef7dc" />
+      <stop offset="100%" stop-color="#dcecb8" />
     </linearGradient>
 
-    <radialGradient id="cloudGlow" cx="50%" cy="40%" r="48%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
-      <stop offset="72%" stop-color="#ffffff" stop-opacity="0.92" />
-      <stop offset="100%" stop-color="#d6edf5" stop-opacity="0" />
+    <radialGradient id="cloudGlow" cx="50%" cy="34%" r="44%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.98" />
+      <stop offset="68%" stop-color="#f8fcf0" stop-opacity="0.88" />
+      <stop offset="100%" stop-color="#e3f1c5" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="limeSkyGlow" cx="50%" cy="54%" r="48%">
+      <stop offset="0%" stop-color="#e7f6c1" stop-opacity="0.65" />
+      <stop offset="60%" stop-color="#d8ef9d" stop-opacity="0.24" />
+      <stop offset="100%" stop-color="#f8fcf0" stop-opacity="0" />
     </radialGradient>
 
     <linearGradient id="mistHorizon" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#d9f0a3" stop-opacity="0" />
-      <stop offset="45%" stop-color="#d6ef8a" stop-opacity="0.55" />
-      <stop offset="100%" stop-color="#b9dc54" stop-opacity="0.95" />
+      <stop offset="38%" stop-color="#d8f093" stop-opacity="0.54" />
+      <stop offset="100%" stop-color="#a8d648" stop-opacity="0.95" />
     </linearGradient>
 
     <linearGradient id="hillFar" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#cae578" />
       <stop offset="50%" stop-color="#9ad04b" />
-      <stop offset="100%" stop-color="#b4dd54" />
+      <stop offset="100%" stop-color="#a8d648" />
     </linearGradient>
 
     <linearGradient id="hillMid" x1="0" y1="0" x2="1" y2="0.6">
       <stop offset="0%" stop-color="#a5d652" />
       <stop offset="35%" stop-color="#5d9d38" />
-      <stop offset="70%" stop-color="#c3dc46" />
-      <stop offset="100%" stop-color="#4e7a23" />
+      <stop offset="70%" stop-color="#a8d648" />
+      <stop offset="100%" stop-color="#2b381a" />
     </linearGradient>
 
     <linearGradient id="hillNear" x1="0" y1="0" x2="1" y2="0.4">
       <stop offset="0%" stop-color="#6fa843" />
       <stop offset="45%" stop-color="#3c6f27" />
-      <stop offset="78%" stop-color="#a4b632" />
-      <stop offset="100%" stop-color="#5e6b1b" />
+      <stop offset="78%" stop-color="#98be3a" />
+      <stop offset="100%" stop-color="#283819" />
     </linearGradient>
 
-    <filter id="softPaint" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="24" />
+    <pattern id="skyWeave" width="12" height="6" patternUnits="userSpaceOnUse">
+      <path d="M0 3 H12" stroke="#6ca92c" stroke-width="0.6" stroke-opacity="0.08" />
+    </pattern>
+
+    <filter id="softPaint" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur stdDeviation="26" />
     </filter>
 
     <filter id="painterlyGrain" x="0%" y="0%" width="100%" height="100%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.72" numOctaves="3" seed="14" result="noise" />
-      <feColorMatrix type="matrix" values="0 0 0 0 0.1  0 0 0 0 0.22  0 0 0 0 0.1  0 0 0 0.08 0" in="noise" result="tintedNoise" />
+      <feTurbulence type="fractalNoise" baseFrequency="0.78" numOctaves="3" seed="14" result="noise" />
+      <feColorMatrix type="matrix" values="0 0 0 0 0.08  0 0 0 0 0.18  0 0 0 0 0.06  0 0 0 0.09 0" in="noise" result="tintedNoise" />
       <feComposite in="tintedNoise" in2="SourceGraphic" operator="over" />
     </filter>
   </defs>
 
   <rect width="1600" height="900" fill="url(#skyGrad)" />
 
-  <!-- Subtle atmospheric painted sky streaks on left and right edges -->
-  <ellipse cx="140" cy="240" rx="340" ry="260" fill="#cbe5ee" opacity="0.55" filter="url(#softPaint)" />
-  <ellipse cx="1480" cy="220" rx="340" ry="250" fill="#bfe0ec" opacity="0.58" filter="url(#softPaint)" />
-  <ellipse cx="800" cy="360" rx="680" ry="320" fill="url(#cloudGlow)" />
+  <!-- Warm pale-lime washes & luminous clouds -->
+  <ellipse cx="140" cy="180" rx="420" ry="260" fill="#d9ecaf" opacity="0.52" filter="url(#softPaint)" />
+  <ellipse cx="1460" cy="170" rx="430" ry="260" fill="#d3e9a5" opacity="0.55" filter="url(#softPaint)" />
+  <ellipse cx="320" cy="400" rx="340" ry="130" fill="#f8fcf0" opacity="0.74" filter="url(#softPaint)" />
+  <ellipse cx="1310" cy="390" rx="360" ry="135" fill="#f8fcf0" opacity="0.74" filter="url(#softPaint)" />
+  <ellipse cx="800" cy="300" rx="600" ry="260" fill="url(#cloudGlow)" />
+  <ellipse cx="800" cy="470" rx="760" ry="200" fill="url(#limeSkyGlow)" filter="url(#softPaint)" />
 
-  <!-- Distant sunlit horizon mist -->
-  <rect x="0" y="540" width="1600" height="360" fill="url(#mistHorizon)" filter="url(#softPaint)" />
+  <!-- Subtle sunlit horizon mist kissing the lower hero CTA -->
+  <rect x="0" y="450" width="1600" height="450" fill="url(#mistHorizon)" filter="url(#softPaint)" />
 
-  <!-- Rolling hills layer 1 (far misty green ridges) -->
-  <path d="M -80 730 C 160 640, 340 690, 560 610 C 740 545, 920 650, 1140 620 C 1340 595, 1470 545, 1680 615 L 1680 940 L -80 940 Z"
-        fill="url(#hillFar)" opacity="0.88" filter="url(#softPaint)" />
+  <!-- Rolling hills layer 1 -->
+  <path d="M -80 710 C 160 620, 340 670, 560 590 C 740 525, 920 630, 1140 600 C 1340 575, 1470 525, 1680 595 L 1680 940 L -80 940 Z"
+        fill="url(#hillFar)" opacity="0.9" filter="url(#softPaint)" />
 
-  <!-- Rolling hills layer 2 (mid sunlit chartreuse & emerald peaks) -->
-  <path d="M -80 770 C 120 710, 290 790, 480 695 C 660 605, 810 730, 1020 740 C 1210 750, 1380 615, 1680 675 L 1680 940 L -80 940 Z"
-        fill="url(#hillMid)" opacity="0.92" filter="url(#softPaint)" />
+  <!-- Rolling hills layer 2 -->
+  <path d="M -80 760 C 120 700, 290 780, 480 685 C 660 595, 810 720, 1020 730 C 1210 740, 1380 605, 1680 665 L 1680 940 L -80 940 Z"
+        fill="url(#hillMid)" opacity="0.94" filter="url(#softPaint)" />
 
-  <!-- Rolling hills layer 3 (foreground rich moss & golden olive slopes) -->
-  <path d="M -80 830 C 180 790, 360 725, 590 775 C 810 820, 1040 710, 1280 700 C 1460 692, 1560 760, 1680 745 L 1680 940 L -80 940 Z"
-        fill="url(#hillNear)" opacity="0.88" filter="url(#softPaint)" />
+  <!-- Rolling hills layer 3 -->
+  <path d="M -80 825 C 180 785, 360 720, 590 770 C 810 815, 1040 705, 1280 695 C 1460 687, 1560 755, 1680 740 L 1680 940 L -80 940 Z"
+        fill="url(#hillNear)" opacity="0.9" filter="url(#softPaint)" />
 
-  <!-- Subtle stipple texture overlay -->
-  <rect width="1600" height="900" fill="transparent" filter="url(#painterlyGrain)" opacity="0.7" />
+  <rect width="1600" height="620" fill="url(#skyWeave)" />
+  <rect width="1600" height="900" fill="transparent" filter="url(#painterlyGrain)" opacity="0.72" />
 </svg>

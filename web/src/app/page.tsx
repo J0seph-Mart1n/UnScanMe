@@ -1,6 +1,7 @@
 import React from "react";
 import { BentoShowcase } from "../components/BentoShowcase";
 import { FaqSection } from "../components/FaqSection";
+import GradientASCII from "../components/GradientASCII";
 import { HowItWorksSection } from "../components/HowItWorksSection";
 import { ArrowDownRightIcon, SparklesIcon } from "../components/Icons";
 import { InstallSection } from "../components/InstallSection";
@@ -25,6 +26,24 @@ export default function ShowcasePage() {
       <main id="main-content">
         <div className="hero-outer">
           <section className="hero-card" aria-labelledby="hero-heading">
+            <div className="hero-ascii-layer" aria-hidden="true">
+              <GradientASCII
+                colors={["#8cb953ff", "#6ca92c", "#a8d648", "#eef8d6"]}
+                shape="horizon"
+                cellSize={18}
+                density={0.78}
+                glyphOpacity={0.42}
+                gradientOpacity={0.58}
+                glow={0.18}
+                softness={0.62}
+                speed={1}
+                lightMode
+                intro
+                clickEffect="wave"
+                mouseInteraction
+              />
+            </div>
+
             <div className="relative z-[2]">
               <ContainerScroll
                 titleComponent={
@@ -75,7 +94,6 @@ export default function ShowcasePage() {
 
         <StatementReveal />
         <BentoShowcase />
-        <TestimonialsSection />
         <HowItWorksSection />
         <InstallSection />
         <FaqSection />
