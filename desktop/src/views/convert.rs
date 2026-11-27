@@ -4,14 +4,15 @@ use crate::{
     clipboard,
     editor,
     image_ops,
-    ollama::{self, PullUpdate},
+    ollama::{self, ChatPhase, ChatProgress, PullUpdate},
     page_setup::{self, Orientation, PageSetup, PaperSize},
     pdf,
-    pdf_import::{self, LoadedPdf},
+    pdf_import::{self, ExtractedPage, LoadedPdf},
     settings::Settings,
     views::VisualEditor,
 };
 use base64::Engine;
+use dioxus::core::Task;
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -351,6 +352,56 @@ const WORKBENCH_JS: &str = r##"
 })();
 "##;
 
+struct TempFileDrop(Option<PathBuf>);
+
+impl Drop for TempFileDrop {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+fn start_cancellable_task<F>(
+    mut active_task: Signal<Option<(u64, Task)>>,
+    mut task_seq: Signal<u64>,
+    fut: F,
+) where
+    F: std::future::Future<Output = ()> + 'static,
+{
+    if let Some((_, prev)) = active_task.write().take() {
+        prev.cancel();
+    }
+    let my_id = *task_seq.peek() + 1;
+    task_seq.set(my_id);
+    let finished = std::rc::Rc::new(std::cell::Cell::new(false));
+    let finished_inner = finished.clone();
+    let task = spawn(async move {
+        fut.await;
+        finished_inner.set(true);
+        if active_task.peek().is_some_and(|(id, _)| id == my_id) {
+            active_task.set(None);
+        }
+    });
+    if !finished.get() && *task_seq.peek() == my_id {
+        active_task.set(Some((my_id, task)));
+    }
+}
+
+fn format_ai_progress(prefix: &str, model: &str, p: &ChatProgress) -> String {
+    match p.phase {
+        ChatPhase::Waiting => format!("{prefix}Waiting for {model}… ({}s)", p.elapsed_secs),
+        ChatPhase::Thinking => format!(
+            "{prefix}{model} is thinking… ({} chars · {}s)",
+            p.thinking_chars, p.elapsed_secs
+        ),
+        ChatPhase::Generating => format!(
+            "{prefix}Generating HTML with {model}… ({} chars · {}s)",
+            p.chars, p.elapsed_secs
+        ),
+    }
+}
+
 async fn convert_image_bytes(
     mut cfg: Settings,
     extra_prompt: String,
@@ -367,20 +418,26 @@ async fn convert_image_bytes(
     }
 
     state.status.set(Status::Busy(format!(
-        "Running {} locally… this can take a few minutes.",
+        "Preparing image and contacting {}…",
         cfg.model
     )));
 
     let max_dim = cfg.max_image_dim;
     let prepared =
         tokio::task::spawn_blocking(move || ollama::prepare_image(&bytes, max_dim)).await;
-    let png = match prepared {
-        Ok(Ok(png)) => png,
+    let prepared_bytes = match prepared {
+        Ok(Ok(bytes)) => bytes,
         Ok(Err(e)) => return state.status.set(Status::Error(format!("{e:#}"))),
         Err(e) => return state.status.set(Status::Error(e.to_string())),
     };
 
-    match ollama::image_to_html(&cfg, &png).await {
+    let model_name = cfg.model.clone();
+    let mut status_sig = state.status;
+    match ollama::image_to_html_streaming(&cfg, &prepared_bytes, move |p| {
+        status_sig.set(Status::Busy(format_ai_progress("", &model_name, &p)));
+    })
+    .await
+    {
         Ok(result) => {
             let setup = (state.page_setup)();
             state.html.set(page_setup::apply_page_setup(&result, &setup));
@@ -398,7 +455,13 @@ async fn generate_from_prompt(cfg: Settings, user_prompt: String, mut state: Con
     state
         .status
         .set(Status::Busy(format!("Generating document with {}…", cfg.model)));
-    match ollama::prompt_to_html(&cfg, &user_prompt).await {
+    let model_name = cfg.model.clone();
+    let mut status_sig = state.status;
+    match ollama::prompt_to_html_streaming(&cfg, &user_prompt, move |p| {
+        status_sig.set(Status::Busy(format_ai_progress("", &model_name, &p)));
+    })
+    .await
+    {
         Ok(result) => {
             let setup = (state.page_setup)();
             state.html.set(page_setup::apply_page_setup(&result, &setup));
@@ -410,6 +473,82 @@ async fn generate_from_prompt(cfg: Settings, user_prompt: String, mut state: Con
         }
         Err(e) => state.status.set(Status::Error(format!("{e:#}"))),
     }
+}
+
+async fn convert_pdf_with_ai(
+    mut cfg: Settings,
+    extra_prompt: String,
+    pdf: &LoadedPdf,
+    plan: &pdf_import::PdfExtractionPlan,
+    mut state: ConvertState,
+) {
+    let extra = extra_prompt.trim();
+    if !extra.is_empty() {
+        cfg.prompt = format!(
+            "{}\n\nAdditional user instructions / customizations (apply these while still outputting only valid HTML):\n{}",
+            cfg.prompt.trim_end(),
+            extra
+        );
+    }
+
+    let ocr_indices = plan.image_only_pages();
+    let total_ocr = ocr_indices.len().max(1);
+    let mut ocr_done = 0usize;
+    let mut rendered_pages = Vec::with_capacity(plan.pages.len());
+
+    for page_plan in &plan.pages {
+        match page_plan {
+            ExtractedPage::Structured(sec) => rendered_pages.push(sec.clone()),
+            ExtractedPage::NeedsOcr { page_index } => {
+                let Some(pdf_page) = pdf.pages.get(*page_index) else {
+                    continue;
+                };
+                ocr_done += 1;
+                let prefix = format!("Page {ocr_done}/{total_ocr}: ");
+                state.status.set(Status::Busy(format!(
+                    "{prefix}Preparing image and contacting {}…",
+                    cfg.model
+                )));
+                let raw_bytes = pdf_page.png_bytes.clone();
+                let max_dim = cfg.max_image_dim;
+                let prepared =
+                    tokio::task::spawn_blocking(move || ollama::prepare_image(&raw_bytes, max_dim))
+                        .await;
+                let prepared_bytes = match prepared {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(e)) => return state.status.set(Status::Error(format!("{e:#}"))),
+                    Err(e) => return state.status.set(Status::Error(e.to_string())),
+                };
+                let model_name = cfg.model.clone();
+                let mut status_sig = state.status;
+                match ollama::image_to_html_streaming(&cfg, &prepared_bytes, move |p| {
+                    status_sig.set(Status::Busy(format_ai_progress(&prefix, &model_name, &p)));
+                })
+                .await
+                {
+                    Ok(page_html) => rendered_pages.push(page_html),
+                    Err(e) => return state.status.set(Status::Error(format!("{e:#}"))),
+                }
+            }
+        }
+    }
+
+    let combined = pdf_import::combine_html_pages(&rendered_pages);
+    if combined.trim().is_empty() {
+        return state.status.set(Status::Error(
+            "Could not extract any editable content from this PDF.".into(),
+        ));
+    }
+
+    let setup = (state.page_setup)();
+    state
+        .html
+        .set(page_setup::apply_page_setup(&combined, &setup));
+    state.chat_history.set(Vec::new());
+    state.tab.set(Tab::Preview);
+    state.status.set(Status::Ok(
+        "Converted scanned PDF to editable HTML. Switch to Visual Edit to edit any element.".into(),
+    ));
 }
 
 async fn ensure_model_ready(cfg: &Settings, mut status: Signal<Status>) -> bool {
@@ -540,15 +679,23 @@ pub fn Convert() -> Element {
     let mut crop_rect = use_signal(|| (0.08f32, 0.08f32, 0.84f32, 0.84f32));
     let mut straighten_deg = use_signal(|| 0.0f32);
     let mut workbench_eval = use_signal(|| None::<document::Eval>);
+    let mut active_task = use_signal(|| None::<(u64, Task)>);
+    let mut task_seq = use_signal(|| 0u64);
 
     let busy = matches!(status(), Status::Busy(_) | Status::Downloading(_));
     let has_image = image.read().is_some();
     let has_pdf = pdf_doc.read().is_some();
+    let is_scanned_pdf = pdf_doc.read().as_ref().is_some_and(|p| !p.has_selectable_text());
     let has_doc_prompt = !doc_prompt.read().trim().is_empty();
     let has_html = !html.read().trim().is_empty();
 
-    // Reset transient Busy/Downloading status and clean up JS listeners on unmount.
+    // Reset transient Busy/Downloading status and cancel active tasks + JS listeners on unmount.
     use_drop(move || {
+        let next = *task_seq.peek() + 1;
+        task_seq.set(next);
+        if let Some((_, task)) = active_task.write().take() {
+            task.cancel();
+        }
         if matches!(*status.peek(), Status::Busy(_) | Status::Downloading(_)) {
             status.set(Status::Idle);
         }
@@ -556,6 +703,15 @@ pub fn Convert() -> Element {
             let _ = ev.send(WorkbenchJsCmd::Shutdown);
         }
     });
+
+    let cancel_generation = move |_| {
+        let next = *task_seq.peek() + 1;
+        task_seq.set(next);
+        if let Some((_, task)) = active_task.write().take() {
+            task.cancel();
+        }
+        status.set(Status::Ok("Generation cancelled.".into()));
+    };
 
     // Mount global clipboard paste & drag-crop pointer controller once.
     use_effect(move || {
@@ -671,27 +827,58 @@ pub fn Convert() -> Element {
         }
     };
 
-    let load_pdf_from_path = move |path: PathBuf, display_name: Option<PathBuf>| async move {
+    let load_pdf_from_path = move |path: PathBuf, display_name: Option<PathBuf>, remove_after: bool| {
+        let active_task = active_task;
+        let task_seq = task_seq;
+        let mut status = status;
+        let mut mode = mode;
+        let mut pdf_doc = pdf_doc;
+        let mut html = html;
+        let mut chat_history = chat_history;
+        let mut refine_open = refine_open;
+        let mut tab = tab;
         status.set(Status::Busy("Importing PDF pages and extracting layout…".into()));
-        match pdf_import::import_pdf(&path).await {
-            Ok(mut loaded) => {
-                if let Some(disp) = display_name {
-                    loaded.path = disp;
+        start_cancellable_task(active_task, task_seq, async move {
+            let _tmp_guard = TempFileDrop(remove_after.then(|| path.clone()));
+            let res = pdf_import::import_pdf(&path).await;
+            match res {
+                Ok(mut loaded) => {
+                    if let Some(disp) = display_name {
+                        loaded.path = disp;
+                    }
+                    let n = loaded.page_count();
+                    let selectable = loaded.has_selectable_text();
+                    let scanned_count = loaded.image_only_page_count();
+                    mode.set(Mode::PdfToHtml);
+                    pdf_doc.set(Some(loaded));
+                    html.set(String::new());
+                    chat_history.set(Vec::new());
+                    refine_open.set(false);
+                    tab.set(Tab::Preview);
+                    if !selectable {
+                        let action_hint = if pdf_import::has_tesseract() {
+                            "Click Convert Page (AI) for full layout & styling, or Fast OCR (Text) for instant offline text extraction."
+                        } else {
+                            "Click Convert Page (AI) to reconstruct layout & editable HTML."
+                        };
+                        status.set(Status::Ok(format!(
+                            "Loaded scanned PDF ({n} page{}, image-only). {action_hint}",
+                            if n == 1 { "" } else { "s" }
+                        )));
+                    } else if scanned_count > 0 {
+                        status.set(Status::Ok(format!(
+                            "Loaded hybrid PDF ({n} pages, {scanned_count} scanned). Click Quick Extract HTML to convert all pages."
+                        )));
+                    } else {
+                        status.set(Status::Ok(format!(
+                            "Loaded PDF ({n} page{}). Click Quick Extract HTML or Convert Page (AI).",
+                            if n == 1 { "" } else { "s" }
+                        )));
+                    }
                 }
-                let n = loaded.page_count();
-                mode.set(Mode::PdfToHtml);
-                pdf_doc.set(Some(loaded));
-                html.set(String::new());
-                chat_history.set(Vec::new());
-                refine_open.set(false);
-                tab.set(Tab::Preview);
-                status.set(Status::Ok(format!(
-                    "Loaded PDF ({n} page{}). Click Quick Extract HTML or Convert Page (AI).",
-                    if n == 1 { "" } else { "s" }
-                )));
+                Err(e) => status.set(Status::Error(format!("{e:#}"))),
             }
-            Err(e) => status.set(Status::Error(format!("{e:#}"))),
-        }
+        });
     };
 
     // --- Actions -----------------------------------------------------------
@@ -708,7 +895,7 @@ pub fn Convert() -> Element {
             return;
         };
         let path = file.path().to_path_buf();
-        load_pdf_from_path(path, None).await;
+        load_pdf_from_path(path, None, false);
     };
 
     let paste_from_clipboard = move |_| run_paste_clipboard(state, crop_mode, straighten_deg);
@@ -735,7 +922,7 @@ pub fn Convert() -> Element {
 
         if name.ends_with(".pdf") || bytes.starts_with(b"%PDF-") {
             if path.is_file() {
-                load_pdf_from_path(path, None).await;
+                load_pdf_from_path(path, None, false);
             } else {
                 // Write dropped PDF bytes to a temp path for Poppler tools
                 let tmp = std::env::temp_dir().join(format!(
@@ -754,8 +941,7 @@ pub fn Convert() -> Element {
                 } else {
                     Some(path)
                 };
-                load_pdf_from_path(tmp.clone(), disp).await;
-                let _ = tokio::fs::remove_file(&tmp).await;
+                load_pdf_from_path(tmp, disp, true);
             }
             return;
         }
@@ -883,40 +1069,144 @@ pub fn Convert() -> Element {
 
     // --- Conversion & AI Actions -------------------------------------------
 
-    let run_model = move |_| async move {
+    let run_model = move |_| {
         let Some(img) = image() else { return };
         let cfg = settings();
-        if !ensure_model_ready(&cfg, status).await {
-            return;
-        }
-        convert_image_bytes(cfg, extra_prompt(), img.bytes, state).await;
+        let extra = extra_prompt();
+        status.set(Status::Busy(format!(
+            "Checking if `{}` is installed in Ollama…",
+            cfg.model
+        )));
+        start_cancellable_task(active_task, task_seq, async move {
+            if ensure_model_ready(&cfg, status).await {
+                convert_image_bytes(cfg, extra, img.bytes, state).await;
+            }
+        });
     };
 
-    let run_prompt = move |_| async move {
+    let run_prompt = move |_| {
         let prompt_text = doc_prompt();
         if prompt_text.trim().is_empty() {
             return;
         }
         let cfg = settings();
-        if !ensure_model_ready(&cfg, status).await {
-            return;
-        }
-        generate_from_prompt(cfg, prompt_text, state).await;
+        status.set(Status::Busy(format!(
+            "Checking if `{}` is installed in Ollama…",
+            cfg.model
+        )));
+        start_cancellable_task(active_task, task_seq, async move {
+            if ensure_model_ready(&cfg, status).await {
+                generate_from_prompt(cfg, prompt_text, state).await;
+            }
+        });
     };
 
     let quick_extract_pdf = move |_| {
         let Some(pdf) = pdf_doc() else { return };
-        let extracted = pdf_import::extract_editable_html(&pdf);
-        let styled = page_setup::apply_page_setup(&extracted, &page_setup());
-        html.set(styled);
-        chat_history.set(Vec::new());
-        tab.set(Tab::Preview);
-        status.set(Status::Ok(
-            "Extracted editable HTML from PDF. Switch to Visual Edit or Refine with AI.".into(),
-        ));
+        let plan = pdf_import::plan_pdf_extraction(&pdf);
+        let ocr_indices = plan.image_only_pages();
+
+        if ocr_indices.is_empty() && plan.has_any_text() {
+            if let Some(extracted) = plan.render_structured_only() {
+                let styled = page_setup::apply_page_setup(&extracted, &page_setup());
+                html.set(styled);
+                chat_history.set(Vec::new());
+                tab.set(Tab::Preview);
+                status.set(Status::Ok(
+                    "Extracted editable HTML from PDF. Switch to Visual Edit or Refine with AI."
+                        .into(),
+                ));
+                return;
+            }
+        }
+
+        let cfg = settings();
+        let extra = extra_prompt();
+        status.set(Status::Busy("Preparing PDF conversion…".into()));
+
+        start_cancellable_task(active_task, task_seq, async move {
+            // Prioritize fast parallel local Tesseract OCR (sub-second per page) before slower Vision AI.
+            if pdf_import::has_tesseract() {
+                let ocr_inputs: Vec<(usize, Vec<u8>)> = ocr_indices
+                    .iter()
+                    .filter_map(|&idx| pdf.pages.get(idx).map(|p| (idx, p.png_bytes.clone())))
+                    .collect();
+
+                if ocr_inputs.len() == ocr_indices.len() && !ocr_inputs.is_empty() {
+                    let n_ocr = ocr_inputs.len();
+                    status.set(Status::Busy(format!(
+                        "Running fast offline OCR on {n_ocr} scanned page{}…",
+                        if n_ocr == 1 { "" } else { "s" }
+                    )));
+                    let mut progress_status = status;
+                    if let Ok(ocr_results) = pdf_import::ocr_pages_parallel_with_progress(
+                        &ocr_inputs,
+                        move |done, total| {
+                            progress_status.set(Status::Busy(format!(
+                                "Running fast offline OCR… {done}/{total} scanned pages"
+                            )));
+                        },
+                    )
+                    .await
+                    {
+                        let mut rendered_pages = Vec::with_capacity(plan.pages.len());
+                        let mut extracted_any_text = false;
+                        for page_plan in &plan.pages {
+                            match page_plan {
+                                ExtractedPage::Structured(sec) => {
+                                    extracted_any_text = true;
+                                    rendered_pages.push(sec.clone());
+                                }
+                                ExtractedPage::NeedsOcr { page_index } => {
+                                    if let Some((_, Some(sec))) =
+                                        ocr_results.iter().find(|(i, _)| i == page_index)
+                                    {
+                                        extracted_any_text = true;
+                                        rendered_pages.push(sec.clone());
+                                    } else {
+                                        rendered_pages.push(
+                                            "<section class=\"pdf-page\"><p></p></section>"
+                                                .to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        if extracted_any_text && !rendered_pages.is_empty() {
+                            let combined = pdf_import::combine_html_pages(&rendered_pages);
+                            let styled = page_setup::apply_page_setup(&combined, &page_setup());
+                            html.set(styled);
+                            chat_history.set(Vec::new());
+                            tab.set(Tab::Preview);
+                            status.set(Status::Ok(
+                                "Converted scanned PDF to editable HTML via fast local OCR. Switch to Visual Edit to edit any element, or use Convert Page (AI) for richer layout styling."
+                                    .into(),
+                            ));
+                            return;
+                        }
+                    }
+                }
+            }
+
+            match ollama::is_model_installed(&cfg.ollama_url, &cfg.model).await {
+                Ok(true) => {
+                    convert_pdf_with_ai(cfg, extra, &pdf, &plan, state).await;
+                }
+                Ok(false) => {
+                    status.set(Status::MissingModel(cfg.model));
+                }
+                Err(_) => {
+                    status.set(Status::Error(
+                        "This PDF is a scanned image with no selectable text layer. Install Tesseract OCR for fast offline conversion or start Ollama (`ollama serve`) for AI conversion."
+                            .into(),
+                    ));
+                }
+            }
+        });
     };
 
-    let convert_pdf_page_ai = move |_| async move {
+    let convert_pdf_page_ai = move |_| {
         let Some(pdf) = pdf_doc() else { return };
         let Some(page) = pdf.current_page().cloned() else {
             status.set(Status::Error(
@@ -925,13 +1215,25 @@ pub fn Convert() -> Element {
             return;
         };
         let cfg = settings();
-        if !ensure_model_ready(&cfg, status).await {
-            return;
-        }
-        convert_image_bytes(cfg, extra_prompt(), page.png_bytes, state).await;
+        let extra = extra_prompt();
+        status.set(Status::Busy(format!(
+            "Checking if `{}` is installed in Ollama…",
+            cfg.model
+        )));
+        start_cancellable_task(active_task, task_seq, async move {
+            if ensure_model_ready(&cfg, status).await {
+                convert_image_bytes(cfg, extra, page.png_bytes, state).await;
+            }
+        });
     };
 
-    let send_refinement = move |instruction_override: Option<String>| async move {
+    let send_refinement = move |instruction_override: Option<String>| {
+        let active_task = active_task;
+        let task_seq = task_seq;
+        let mut chat_history = chat_history;
+        let mut refine_input = refine_input;
+        let mut status = status;
+        let mut html = html;
         if busy {
             return;
         }
@@ -941,95 +1243,115 @@ pub fn Convert() -> Element {
             return;
         }
         let cfg = settings();
-        if !ensure_model_ready(&cfg, status).await {
-            return;
-        }
+        status.set(Status::Busy(format!(
+            "Checking if `{}` is installed in Ollama…",
+            cfg.model
+        )));
+        start_cancellable_task(active_task, task_seq, async move {
+            if !ensure_model_ready(&cfg, status).await {
+                return;
+            }
 
-        let prior: Vec<String> = chat_history
-            .read()
-            .iter()
-            .filter(|t| t.role == ChatRole::User)
-            .map(|t| t.content.clone())
-            .collect();
+            let prior: Vec<String> = chat_history
+                .read()
+                .iter()
+                .filter(|t| t.role == ChatRole::User)
+                .map(|t| t.content.clone())
+                .collect();
 
-        chat_history.write().push(ChatTurn {
-            role: ChatRole::User,
-            content: trimmed.clone(),
+            chat_history.write().push(ChatTurn {
+                role: ChatRole::User,
+                content: trimmed.clone(),
+            });
+            if refine_input.read().trim() == trimmed {
+                refine_input.set(String::new());
+            }
+
+            status.set(Status::Busy(format!("Refining HTML with {}…", cfg.model)));
+            let current_html = html();
+            let model_name = cfg.model.clone();
+            let mut progress_status = status;
+            match ollama::refine_html_streaming(&cfg, &current_html, &prior, &trimmed, move |p| {
+                progress_status.set(Status::Busy(format_ai_progress("Refining: ", &model_name, &p)));
+            })
+            .await
+            {
+                Ok(updated) => {
+                    let final_html = page_setup::apply_page_setup(&updated, &page_setup());
+                    let lines = final_html.lines().count();
+                    html.set(final_html);
+                    chat_history.write().push(ChatTurn {
+                        role: ChatRole::Assistant,
+                        content: format!("Updated document HTML ({lines} lines)."),
+                    });
+                    status.set(Status::Ok("HTML refined by AI.".into()));
+                }
+                Err(e) => {
+                    chat_history.write().push(ChatTurn {
+                        role: ChatRole::Assistant,
+                        content: format!("Error: {e:#}"),
+                    });
+                    status.set(Status::Error(format!("{e:#}")));
+                }
+            }
         });
-        if refine_input.read().trim() == trimmed {
-            refine_input.set(String::new());
-        }
-
-        status.set(Status::Busy(format!("Refining HTML with {}…", cfg.model)));
-        let current_html = html();
-        match ollama::refine_html(&cfg, &current_html, &prior, &trimmed).await {
-            Ok(updated) => {
-                let final_html = page_setup::apply_page_setup(&updated, &page_setup());
-                let lines = final_html.lines().count();
-                html.set(final_html);
-                chat_history.write().push(ChatTurn {
-                    role: ChatRole::Assistant,
-                    content: format!("Updated document HTML ({lines} lines)."),
-                });
-                status.set(Status::Ok("HTML refined by AI.".into()));
-            }
-            Err(e) => {
-                chat_history.write().push(ChatTurn {
-                    role: ChatRole::Assistant,
-                    content: format!("Error: {e:#}"),
-                });
-                status.set(Status::Error(format!("{e:#}")));
-            }
-        }
     };
 
-    let download_missing_model = move |_| async move {
+    let download_missing_model = move |_| {
         let cfg = settings();
+        let extra = extra_prompt();
         status.set(Status::Downloading(PullUpdate {
             text: format!("Starting download of `{}` from Ollama…", cfg.model),
             percent: Some(0),
         }));
 
-        let pull_res = ollama::pull_model(&cfg.ollama_url, &cfg.model, |update| {
-            status.set(Status::Downloading(update));
-        })
-        .await;
+        start_cancellable_task(active_task, task_seq, async move {
+            let pull_res = ollama::pull_model(&cfg.ollama_url, &cfg.model, |update| {
+                status.set(Status::Downloading(update));
+            })
+            .await;
 
-        match pull_res {
-            Ok(()) => match mode() {
-                Mode::ImageToPdf => {
-                    if let Some(img) = image() {
-                        convert_image_bytes(cfg, extra_prompt(), img.bytes, state).await;
-                    } else {
-                        status.set(Status::Ok(format!(
-                            "Model `{}` downloaded and ready. Open an image to convert.",
-                            cfg.model
-                        )));
+            match pull_res {
+                Ok(()) => match mode() {
+                    Mode::ImageToPdf => {
+                        if let Some(img) = image() {
+                            convert_image_bytes(cfg, extra, img.bytes, state).await;
+                        } else {
+                            status.set(Status::Ok(format!(
+                                "Model `{}` downloaded and ready. Open an image to convert.",
+                                cfg.model
+                            )));
+                        }
                     }
-                }
-                Mode::PromptToPdf => {
-                    if !doc_prompt.read().trim().is_empty() {
-                        generate_from_prompt(cfg, doc_prompt(), state).await;
-                    } else {
-                        status.set(Status::Ok(format!(
-                            "Model `{}` downloaded and ready. Enter a prompt to generate.",
-                            cfg.model
-                        )));
+                    Mode::PromptToPdf => {
+                        if !doc_prompt.read().trim().is_empty() {
+                            generate_from_prompt(cfg, doc_prompt(), state).await;
+                        } else {
+                            status.set(Status::Ok(format!(
+                                "Model `{}` downloaded and ready. Enter a prompt to generate.",
+                                cfg.model
+                            )));
+                        }
                     }
-                }
-                Mode::PdfToHtml => {
-                    if let Some(page) = pdf_doc().and_then(|p| p.current_page().cloned()) {
-                        convert_image_bytes(cfg, extra_prompt(), page.png_bytes, state).await;
-                    } else {
-                        status.set(Status::Ok(format!(
-                            "Model `{}` downloaded and ready. Import a PDF to convert.",
-                            cfg.model
-                        )));
+                    Mode::PdfToHtml => {
+                        if let Some(pdf) = pdf_doc() {
+                            let plan = pdf_import::plan_pdf_extraction(&pdf);
+                            if !plan.image_only_pages().is_empty() {
+                                convert_pdf_with_ai(cfg, extra, &pdf, &plan, state).await;
+                            } else if let Some(page) = pdf.current_page().cloned() {
+                                convert_image_bytes(cfg, extra, page.png_bytes, state).await;
+                            }
+                        } else {
+                            status.set(Status::Ok(format!(
+                                "Model `{}` downloaded and ready. Import a PDF to convert.",
+                                cfg.model
+                            )));
+                        }
                     }
-                }
-            },
-            Err(e) => status.set(Status::Error(format!("{e:#}"))),
-        }
+                },
+                Err(e) => status.set(Status::Error(format!("{e:#}"))),
+            }
+        });
     };
 
     let update_page_setup = move |new_setup: PageSetup| {
@@ -1077,10 +1399,12 @@ pub fn Convert() -> Element {
         status.set(Status::Busy("Rendering PDF with Chromium…".into()));
         let chromium = settings.read().chromium_path.clone();
         let final_html = page_setup::apply_page_setup(&html(), &page_setup());
-        match pdf::html_to_pdf(&chromium, &final_html, &path).await {
-            Ok(()) => status.set(Status::Ok(format!("Saved {}", path.display()))),
-            Err(e) => status.set(Status::Error(format!("{e:#}"))),
-        }
+        start_cancellable_task(active_task, task_seq, async move {
+            match pdf::html_to_pdf(&chromium, &final_html, &path).await {
+                Ok(()) => status.set(Status::Ok(format!("Saved {}", path.display()))),
+                Err(e) => status.set(Status::Error(format!("{e:#}"))),
+            }
+        });
     };
 
     let save_html = move |_| async move {
@@ -1355,18 +1679,38 @@ pub fn Convert() -> Element {
                             }
                             "Open PDF"
                         }
-                        button {
-                            class: "primary",
-                            disabled: busy || !has_pdf,
-                            title: "Extract text, headings, and tables directly into editable HTML (instant, offline)",
-                            onclick: quick_extract_pdf,
-                            "Quick Extract HTML"
-                        }
-                        button {
-                            disabled: busy || !has_pdf,
-                            title: "Transcribe the selected PDF page using local Ollama Vision AI",
-                            onclick: convert_pdf_page_ai,
-                            "Convert Page (AI)"
+                        if is_scanned_pdf {
+                            button {
+                                class: "primary",
+                                disabled: busy || !has_pdf,
+                                title: "Recreate the selected PDF page with full layout, styling, and editable elements using local Vision AI",
+                                onclick: convert_pdf_page_ai,
+                                "Convert Page (AI)"
+                            }
+                            button {
+                                disabled: busy || !has_pdf,
+                                title: "Instant offline plain-text & table OCR extraction (no visual styling)",
+                                onclick: quick_extract_pdf,
+                                if pdf_import::has_tesseract() {
+                                    "Fast OCR (Text)"
+                                } else {
+                                    "Quick Extract HTML"
+                                }
+                            }
+                        } else {
+                            button {
+                                class: "primary",
+                                disabled: busy || !has_pdf,
+                                title: "Extract text, headings, and tables directly into editable HTML",
+                                onclick: quick_extract_pdf,
+                                "Quick Extract HTML"
+                            }
+                            button {
+                                disabled: busy || !has_pdf,
+                                title: "Recreate the selected PDF page with full visual layout & styling using local Vision AI",
+                                onclick: convert_pdf_page_ai,
+                                "Convert Page (AI)"
+                            }
                         }
                         button {
                             class: "ghost btn-danger",
@@ -1467,6 +1811,20 @@ pub fn Convert() -> Element {
                         }
                         "Export PDF"
                     }
+                    if busy && active_task().is_some() {
+                        button {
+                            class: "btn-stop",
+                            title: "Stop the current generation or export",
+                            onclick: cancel_generation,
+                            svg {
+                                class: "icon",
+                                view_box: "0 0 24 24",
+                                fill: "currentColor",
+                                rect { x: "6", y: "6", width: "12", height: "12", rx: "2" }
+                            }
+                            "Stop"
+                        }
+                    }
                 }
             }
 
@@ -1502,7 +1860,22 @@ pub fn Convert() -> Element {
                 Status::Busy(msg) => rsx! {
                     div { class: "status busy", role: "status", aria_live: "polite",
                         span { class: "spinner" }
-                        "{msg}"
+                        span { "{msg}" }
+                        if active_task().is_some() {
+                            span { class: "spacer" }
+                            button {
+                                class: "btn-small btn-stop",
+                                title: "Cancel current generation",
+                                onclick: cancel_generation,
+                                svg {
+                                    class: "icon",
+                                    view_box: "0 0 24 24",
+                                    fill: "currentColor",
+                                    rect { x: "6", y: "6", width: "12", height: "12", rx: "2" }
+                                }
+                                "Stop"
+                            }
+                        }
                     }
                 },
                 Status::MissingModel(model) => rsx! {
@@ -1526,6 +1899,21 @@ pub fn Convert() -> Element {
                         div { class: "status-row",
                             span { class: "spinner" }
                             span { "{update.text}" }
+                            if active_task().is_some() {
+                                span { class: "spacer" }
+                                button {
+                                    class: "btn-small btn-stop",
+                                    title: "Cancel download & generation",
+                                    onclick: cancel_generation,
+                                    svg {
+                                        class: "icon",
+                                        view_box: "0 0 24 24",
+                                        fill: "currentColor",
+                                        rect { x: "6", y: "6", width: "12", height: "12", rx: "2" }
+                                    }
+                                    "Stop"
+                                }
+                            }
                         }
                         if let Some(pct) = update.percent {
                             div { class: "progress-track",
@@ -1987,11 +2375,27 @@ pub fn Convert() -> Element {
                                     value: "{refine_input}",
                                     oninput: move |e| refine_input.set(e.value()),
                                 }
-                                button {
-                                    class: "primary btn-small",
-                                    r#type: "submit",
-                                    disabled: busy || refine_input.read().trim().is_empty(),
-                                    "Apply"
+                                if busy && active_task().is_some() {
+                                    button {
+                                        class: "btn-small btn-stop",
+                                        r#type: "button",
+                                        title: "Cancel refinement",
+                                        onclick: cancel_generation,
+                                        svg {
+                                            class: "icon",
+                                            view_box: "0 0 24 24",
+                                            fill: "currentColor",
+                                            rect { x: "6", y: "6", width: "12", height: "12", rx: "2" }
+                                        }
+                                        "Stop"
+                                    }
+                                } else {
+                                    button {
+                                        class: "primary btn-small",
+                                        r#type: "submit",
+                                        disabled: busy || refine_input.read().trim().is_empty(),
+                                        "Apply"
+                                    }
                                 }
                             }
                         }

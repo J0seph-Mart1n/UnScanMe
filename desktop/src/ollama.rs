@@ -30,13 +30,38 @@ struct ChatOptions {
 }
 
 #[derive(Deserialize)]
-struct ChatResponse {
-    message: ResponseMessage,
+struct ChatStreamChunk {
+    #[serde(default)]
+    message: Option<StreamMessage>,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct ResponseMessage {
+struct StreamMessage {
+    #[serde(default)]
     content: String,
+    #[serde(default)]
+    thinking: String,
+}
+
+/// Phase reported while streaming a response from Ollama.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatPhase {
+    Waiting,
+    Thinking,
+    Generating,
+}
+
+/// Live progress update emitted during Ollama chat generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatProgress {
+    pub phase: ChatPhase,
+    pub chars: usize,
+    pub thinking_chars: usize,
+    pub elapsed_secs: u64,
 }
 
 #[derive(Deserialize)]
@@ -102,22 +127,119 @@ Follow these rules strictly:
 3. **No External Resources**: Do NOT introduce external URLs, external fonts, or `<script>` tags. Preserve any existing inline SVG or `data:` image URLs unless told to change them.
 4. **Output Format**: Return ONLY the complete, updated raw HTML code starting with `<!DOCTYPE html>` and ending with `</html>`. Do NOT wrap in markdown code fences or include any explanatory text."#;
 
-async fn send_chat(settings: &Settings, prompt: &str, images: Vec<String>) -> Result<String> {
+fn contains_closing_html(s: &str) -> bool {
+    s.to_ascii_lowercase().contains("</html>")
+}
+
+/// Detect degenerate repetition loops at the tail of streaming model output.
+/// Returns a valid UTF-8 byte index to truncate to if a loop is found.
+pub fn detect_repetition_loop(s: &str) -> Option<usize> {
+    const TAIL_WINDOW: usize = 1500;
+    let mut start = s.len().saturating_sub(TAIL_WINDOW);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = &s[start..];
+    if tail.len() < 240 {
+        return None;
+    }
+
+    if let Some(last_ch) = tail.chars().next_back() {
+        let mut run_chars = 0usize;
+        let mut run_bytes = 0usize;
+        for c in tail.chars().rev() {
+            if c == last_ch {
+                run_chars += 1;
+                run_bytes += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if run_chars >= 250 {
+            return Some(s.len() - run_bytes + last_ch.len_utf8());
+        }
+    }
+
+    let tail_bytes = tail.as_bytes();
+    let tail_len = tail_bytes.len();
+    for p in 4..=120 {
+        if p > tail_len || !tail.is_char_boundary(tail_len - p) {
+            continue;
+        }
+        let pat = &tail_bytes[tail_len - p..];
+        let mut repeats = 1usize;
+        while (repeats + 1) * p <= tail_len {
+            let next_start = tail_len - (repeats + 1) * p;
+            if &tail_bytes[next_start..next_start + p] == pat {
+                repeats += 1;
+            } else {
+                break;
+            }
+        }
+        if repeats >= 12 && repeats * p >= 240 {
+            return Some(s.len() - (repeats - 2) * p);
+        }
+    }
+
+    None
+}
+
+async fn send_chat_streaming<F>(
+    settings: &Settings,
+    prompt: &str,
+    images: Vec<String>,
+    mut on_progress: F,
+) -> Result<String>
+where
+    F: FnMut(ChatProgress),
+{
     let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
     let request = ChatRequest {
         model: &settings.model,
         messages: vec![ChatMessage { role: "user", content: prompt, images }],
-        stream: false,
-        options: ChatOptions { temperature: settings.temperature, num_ctx: settings.num_ctx },
+        stream: true,
+        options: ChatOptions {
+            temperature: settings.temperature,
+            num_ctx: settings.num_ctx,
+        },
     };
 
-    // Local inference of a full page can take minutes on small GPUs.
-    let response = client(Duration::from_secs(30 * 60))?
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .with_context(|| format!("could not reach Ollama at {url}. Is `ollama serve` running?"))?;
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .build()?;
+
+    let started = tokio::time::Instant::now();
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let mut response = {
+        let send_fut = std::pin::pin!(http.post(&url).json(&request).send());
+        let mut send_fut = send_fut;
+        loop {
+            tokio::select! {
+                res = &mut send_fut => {
+                    break res.with_context(|| {
+                        format!("could not reach Ollama at {url}. Is `ollama serve` running?")
+                    })?;
+                }
+                _ = ticker.tick() => {
+                    let elapsed = started.elapsed();
+                    on_progress(ChatProgress {
+                        phase: ChatPhase::Waiting,
+                        chars: 0,
+                        thinking_chars: 0,
+                        elapsed_secs: elapsed.as_secs(),
+                    });
+                    if elapsed >= Duration::from_secs(180) {
+                        bail!(
+                            "Timed out after 180s waiting for `{}` to start responding. Try lowering Max image px in Settings, using Fast Convert (OCR), or checking `ollama ps`.",
+                            settings.model
+                        );
+                    }
+                }
+            }
+        }
+    };
 
     let status = response.status();
     if !status.is_success() {
@@ -125,24 +247,167 @@ async fn send_chat(settings: &Settings, prompt: &str, images: Vec<String>) -> Re
         bail!("Ollama returned {status}: {body}");
     }
 
-    let chat: ChatResponse = response.json().await.context("invalid response from Ollama")?;
-    let html = clean_html(&chat.message.content);
+    let mut last_activity = tokio::time::Instant::now();
+    let mut last_emit = tokio::time::Instant::now();
+    let mut accumulated = String::new();
+    let mut thinking_chars = 0usize;
+    let mut buffer = String::new();
+    let mut loop_trimmed = false;
+
+    'stream: loop {
+        tokio::select! {
+            chunk_res = response.chunk() => {
+                match chunk_res {
+                    Ok(Some(chunk)) => {
+                        last_activity = tokio::time::Instant::now();
+                        buffer.push_str(&String::from_utf8_lossy(&chunk));
+                        while let Some(pos) = buffer.find('\n') {
+                            let line = buffer[..pos].trim().to_string();
+                            buffer.drain(..=pos);
+                            if line.is_empty() {
+                                continue;
+                            }
+                            let Ok(event) = serde_json::from_str::<ChatStreamChunk>(&line) else {
+                                continue;
+                            };
+                            if let Some(err) = event.error {
+                                bail!("Ollama error: {err}");
+                            }
+                            if let Some(msg) = event.message {
+                                thinking_chars += msg.thinking.len();
+                                accumulated.push_str(&msg.content);
+                            }
+                            if last_emit.elapsed() >= Duration::from_millis(150) {
+                                let phase = if !accumulated.is_empty() {
+                                    ChatPhase::Generating
+                                } else if thinking_chars > 0 {
+                                    ChatPhase::Thinking
+                                } else {
+                                    ChatPhase::Waiting
+                                };
+                                on_progress(ChatProgress {
+                                    phase,
+                                    chars: accumulated.len(),
+                                    thinking_chars,
+                                    elapsed_secs: started.elapsed().as_secs(),
+                                });
+                                last_emit = tokio::time::Instant::now();
+                            }
+                            if contains_closing_html(&accumulated) {
+                                break 'stream;
+                            }
+                            if let Some(cut_at) = detect_repetition_loop(&accumulated) {
+                                accumulated.truncate(cut_at);
+                                loop_trimmed = true;
+                                break 'stream;
+                            }
+                            if event.done {
+                                break 'stream;
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        let trailing = buffer.trim();
+                        if !trailing.is_empty() {
+                            if let Ok(event) = serde_json::from_str::<ChatStreamChunk>(trailing) {
+                                if let Some(err) = event.error {
+                                    bail!("Ollama error: {err}");
+                                }
+                                if let Some(msg) = event.message {
+                                    thinking_chars += msg.thinking.len();
+                                    accumulated.push_str(&msg.content);
+                                }
+                            }
+                        }
+                        break 'stream;
+                    }
+                    Err(e) => {
+                        return Err(e).context("stream interrupted while reading response from Ollama");
+                    }
+                }
+            }
+            _ = ticker.tick() => {
+                let idle_limit = if accumulated.is_empty() && thinking_chars == 0 {
+                    Duration::from_secs(180)
+                } else {
+                    Duration::from_secs(60)
+                };
+                if last_activity.elapsed() >= idle_limit {
+                    if accumulated.len() > 120 && accumulated.to_ascii_lowercase().contains("<body") {
+                        break 'stream;
+                    }
+                    bail!(
+                        "Stream stalled waiting for `{}` (no tokens for {}s). Try lowering Max image px in Settings or retrying.",
+                        settings.model,
+                        idle_limit.as_secs()
+                    );
+                }
+                let phase = if !accumulated.is_empty() {
+                    ChatPhase::Generating
+                } else if thinking_chars > 0 {
+                    ChatPhase::Thinking
+                } else {
+                    ChatPhase::Waiting
+                };
+                on_progress(ChatProgress {
+                    phase,
+                    chars: accumulated.len(),
+                    thinking_chars,
+                    elapsed_secs: started.elapsed().as_secs(),
+                });
+            }
+        }
+    }
+
+    if accumulated.trim().is_empty() {
+        if thinking_chars > 0 {
+            bail!(
+                "Model `{}` emitted only reasoning tokens and no HTML output. Switch to a direct vision/HTML model such as `qwen2.5vl:3b` in Settings.",
+                settings.model
+            );
+        }
+        return Err(anyhow!("the model returned an empty response"));
+    }
+
+    let html = clean_html(&accumulated);
+    if loop_trimmed
+        && (html.trim().len() < 60 || !html.to_ascii_lowercase().contains("<body"))
+    {
+        bail!(
+            "Model `{}` got stuck in a repetition loop. Try lowering Max image px in Settings or retrying.",
+            settings.model
+        );
+    }
     if html.trim().is_empty() {
         return Err(anyhow!("the model returned an empty response"));
     }
     Ok(html)
 }
 
-/// Send the image to the model and return a full HTML document.
-pub async fn image_to_html(settings: &Settings, png: &[u8]) -> Result<String> {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(png);
-    send_chat(settings, &settings.prompt, vec![encoded]).await
+/// Send the prepared image to the model with live streaming progress and return a full HTML document.
+pub async fn image_to_html_streaming<F>(
+    settings: &Settings,
+    image_bytes: &[u8],
+    on_progress: F,
+) -> Result<String>
+where
+    F: FnMut(ChatProgress),
+{
+    let encoded = base64::engine::general_purpose::STANDARD.encode(image_bytes);
+    send_chat_streaming(settings, &settings.prompt, vec![encoded], on_progress).await
 }
 
-/// Generate a full HTML document directly from a user text prompt (no image).
-pub async fn prompt_to_html(settings: &Settings, user_request: &str) -> Result<String> {
+/// Generate a full HTML document directly from a user text prompt with live streaming progress.
+pub async fn prompt_to_html_streaming<F>(
+    settings: &Settings,
+    user_request: &str,
+    on_progress: F,
+) -> Result<String>
+where
+    F: FnMut(ChatProgress),
+{
     let prompt = format!("{DOCUMENT_GENERATION_PROMPT}\n\nUser request:\n{}", user_request.trim());
-    send_chat(settings, &prompt, Vec::new()).await
+    send_chat_streaming(settings, &prompt, Vec::new(), on_progress).await
 }
 
 /// Build the follow-up refinement prompt with concise prior-turn context and the latest HTML.
@@ -201,13 +466,17 @@ pub fn restore_data_urls(html: &str, saved: &[String]) -> String {
     out
 }
 
-/// Iteratively refine an existing HTML document according to a follow-up user chat instruction.
-pub async fn refine_html(
+/// Iteratively refine an existing HTML document with live streaming progress.
+pub async fn refine_html_streaming<F>(
     settings: &Settings,
     current_html: &str,
     prior_requests: &[String],
     instruction: &str,
-) -> Result<String> {
+    on_progress: F,
+) -> Result<String>
+where
+    F: FnMut(ChatProgress),
+{
     if instruction.trim().is_empty() {
         bail!("refinement instruction cannot be empty");
     }
@@ -216,7 +485,7 @@ pub async fn refine_html(
     }
     let (compact_html, saved_urls) = protect_data_urls(current_html);
     let prompt = build_refinement_prompt(&compact_html, prior_requests, instruction);
-    let refined = send_chat(settings, &prompt, Vec::new()).await?;
+    let refined = send_chat_streaming(settings, &prompt, Vec::new(), on_progress).await?;
     Ok(restore_data_urls(&refined, &saved_urls))
 }
 
@@ -332,11 +601,18 @@ pub fn clean_html(raw: &str) -> String {
         s = s.trim();
     }
 
-    // Cut any text before the document starts / after it ends.
+    // Cut any text before the document starts / after it ends, and close truncated docs.
     let lower = s.to_ascii_lowercase();
     if let Some(start) = lower.find("<!doctype").or_else(|| lower.find("<html")) {
-        let end = lower.rfind("</html>").map(|e| e + "</html>".len()).unwrap_or(s.len());
-        return s[start..end].to_string();
+        if let Some(end) = lower.rfind("</html>") {
+            return s[start..end + "</html>".len()].to_string();
+        }
+        let mut partial = s[start..].trim_end().to_string();
+        if !lower[start..].contains("</body>") {
+            partial.push_str("\n</body>");
+        }
+        partial.push_str("\n</html>");
+        return partial;
     }
 
     // Fragment only: wrap it in a printable document.
@@ -400,5 +676,51 @@ mod tests {
         assert!(compact.contains("__DF_DATA_IMG_0__"));
         assert!(!compact.contains(&big_b64));
         assert_eq!(restore_data_urls(&compact, &saved), html);
+    }
+
+    #[test]
+    fn detect_repetition_loop_catches_repeated_rows_and_ignores_normal_html() {
+        let normal = "<!DOCTYPE html><html><body><h1>Invoice</h1><table><tr><td>Item 1</td><td>$10</td></tr><tr><td>Item 2</td><td>$20</td></tr></table></body></html>";
+        assert_eq!(detect_repetition_loop(normal), None);
+
+        let repeated_row = "<tr><td></td><td></td></tr>";
+        let looped = format!("<!DOCTYPE html><html><body><table>{}", repeated_row.repeat(14));
+        let cut = detect_repetition_loop(&looped).expect("should detect repeating row loop");
+        let truncated = &looped[..cut];
+        assert!(truncated.contains("<table>"));
+        assert!(truncated.len() < looped.len());
+
+        let blank_run = format!("<!DOCTYPE html><html><body><p>Hi</p>{}", " ".repeat(260));
+        let cut_ws = detect_repetition_loop(&blank_run).expect("should detect repeating space run");
+        assert!(cut_ws < blank_run.len());
+    }
+
+    #[test]
+    fn clean_html_closes_truncated_document() {
+        let truncated = "<!DOCTYPE html><html><body><h1>Draft</h1><p>Hello";
+        let cleaned = clean_html(truncated);
+        assert!(cleaned.ends_with("</body>\n</html>"));
+
+        let missing_html_close = "<!DOCTYPE html><html><body><h1>Draft</h1></body>";
+        let cleaned2 = clean_html(missing_html_close);
+        assert!(cleaned2.ends_with("</body>\n</html>"));
+        assert_eq!(cleaned2.matches("</body>").count(), 1);
+    }
+
+    #[test]
+    fn prepare_image_resizes_and_encodes_png() {
+        let img = image::RgbImage::from_fn(1200, 600, |x, y| {
+            image::Rgb([(x % 255) as u8, (y % 255) as u8, 128])
+        });
+        let mut png_in = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut png_in, image::ImageFormat::Png)
+            .unwrap();
+
+        let prepared = prepare_image(&png_in.into_inner(), 512).unwrap();
+        assert!(prepared.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+        let decoded = image::load_from_memory(&prepared).unwrap();
+        assert_eq!(decoded.width(), 512);
+        assert_eq!(decoded.height(), 256);
     }
 }

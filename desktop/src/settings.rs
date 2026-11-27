@@ -35,6 +35,41 @@ Follow these rules strictly:
    with </html>. Do NOT wrap the output in markdown code fences. Do NOT include any
    explanatory text before or after the HTML."#;
 
+const INTERMEDIATE_DEFAULT_PROMPT: &str = r#"You are an expert document and image-to-HTML5 converter agent.
+Your task is to analyze the provided image (a scanned document, invoice, form, receipt, screenshot,
+cropped extract, or rasterized PDF page) and generate a SINGLE, complete, self-contained HTML5
+document that faithfully reproduces all visible content and structure.
+
+Follow these rules strictly:
+
+1. **Complete Text & Data Extraction**: Extract ALL visible text verbatim — every heading,
+   paragraph, label, date, reference number, line item, quantity, price, subtotal, tax, total,
+   footnote, caption, or badge. Preserve original wording, capitalisation, numbers, and punctuation.
+
+2. **Visual-Editor-Ready Semantic Structure**: Build the document with clean, discrete semantic HTML5
+   elements (`<header>`, `<section>`, `<h1>`–`<h3>`, `<p>`, `<ul>`/`<ol>`, `<div>`, `<table>`)
+   and put all CSS inside a single `<style>` block in `<head>`. Avoid deeply nested wrappers,
+   pseudo-element-only text, or rigid fixed heights on text containers so individual blocks can be
+   clicked, inline-edited, moved, resized, and refined cleanly in a visual editor or AI follow-up chat.
+
+3. **Interactive Table Editor Compatibility**: For ANY tabular data, line items, pricing breakdowns,
+   schedules, or key-value grids, ALWAYS use real semantic `<table>` markup (`<thead>`, `<tbody>`,
+   `<tr>`, `<th>`, `<td>`) rather than Flexbox/Grid `<div>` rows. Style tables with
+   `border-collapse: collapse`, clear cell borders and padding, and right-aligned numeric/currency cells.
+
+4. **Page Setup & Print Styling**: Set `*, *::before, *::after { box-sizing: border-box; }` and
+   include a clean `@page { size: A4 portrait; margin: 15mm; }` rule in `<style>` so the layout
+   fits cleanly on standard paper and adapts automatically when custom Page Setup paper sizes,
+   orientations, or margins are applied.
+
+5. **Visual Design & Never Wrap the Page as an Image**:
+   - Match the original colours, typography weights/sizes, borders, rounded corners, and spacing.
+   - Do NOT use `<img>` tags (neither external URLs nor base64 `data:image` URIs), external fonts, or `<script>` tags. NEVER wrap the scanned page or document as an image; reconstruct every visible text element, heading, label, and table as individually editable HTML5 elements.
+   - Replicate logos, stamps, seals, dividers, or simple diagrams using inline `<svg>`, CSS shapes, or Unicode symbols.
+
+6. **Output Format**: Return ONLY the raw HTML5 code starting with `<!DOCTYPE html>` and ending
+   with `</html>`. Do NOT wrap the output in markdown code fences or add any explanatory text."#;
+
 pub const DEFAULT_PROMPT: &str = r#"You are an expert document and image-to-HTML5 converter agent.
 Your task is to analyze the provided image (a scanned document, invoice, form, receipt, screenshot,
 cropped extract, or rasterized PDF page) and generate a SINGLE, complete, self-contained HTML5
@@ -121,7 +156,10 @@ impl Settings {
     /// Upgrade an unmodified legacy default prompt (or empty prompt) to the current `DEFAULT_PROMPT`.
     pub fn migrate_legacy_prompt(&mut self) {
         let trimmed = self.prompt.trim();
-        if trimmed.is_empty() || trimmed == LEGACY_DEFAULT_PROMPT.trim() {
+        if trimmed.is_empty()
+            || trimmed == LEGACY_DEFAULT_PROMPT.trim()
+            || trimmed == INTERMEDIATE_DEFAULT_PROMPT.trim()
+        {
             self.prompt = DEFAULT_PROMPT.into();
         }
     }
@@ -168,6 +206,10 @@ mod tests {
         let mut legacy = Settings { prompt: LEGACY_DEFAULT_PROMPT.into(), ..Default::default() };
         legacy.migrate_legacy_prompt();
         assert_eq!(legacy.prompt, DEFAULT_PROMPT);
+
+        let mut intermediate = Settings { prompt: INTERMEDIATE_DEFAULT_PROMPT.into(), ..Default::default() };
+        intermediate.migrate_legacy_prompt();
+        assert_eq!(intermediate.prompt, DEFAULT_PROMPT);
 
         let custom_text = "My custom invoice extraction prompt";
         let mut custom = Settings { prompt: custom_text.into(), ..Default::default() };

@@ -91,6 +91,7 @@
     let selected = null;
     let editing = null;
     let uiLayer = null;
+    let hoverBox = null;
     let selectBox = null;
     let badgeEl = null;
     let moveHandleEl = null;
@@ -220,23 +221,42 @@
       });
     }
 
+    function updateHoverOverlay(el) {
+      if (!hoverBox || !uiLayer || !doc) return;
+      if (!el || el === selected || editing || dragState || !doc.body.contains(el)) {
+        hoverBox.style.display = "none";
+        return;
+      }
+      const uiRect = uiLayer.getBoundingClientRect();
+      const rect = el.getBoundingClientRect();
+      hoverBox.style.display = "block";
+      hoverBox.style.left = rect.left - uiRect.left + "px";
+      hoverBox.style.top = rect.top - uiRect.top + "px";
+      hoverBox.style.width = Math.max(4, rect.width) + "px";
+      hoverBox.style.height = Math.max(4, rect.height) + "px";
+    }
+
     function updateOverlay() {
-      if (!selectBox || !doc) return;
+      if (!selectBox || !uiLayer || !doc) return;
       if (!selected || !doc.body.contains(selected)) {
         selected = null;
         selectBox.style.display = "none";
         return;
       }
+      const uiRect = uiLayer.getBoundingClientRect();
       const rect = selected.getBoundingClientRect();
-      const scrollX = doc.defaultView ? doc.defaultView.scrollX : 0;
-      const scrollY = doc.defaultView ? doc.defaultView.scrollY : 0;
+      const relLeft = rect.left - uiRect.left;
+      const relTop = rect.top - uiRect.top;
       selectBox.style.display = "block";
-      selectBox.style.left = rect.left + scrollX + "px";
-      selectBox.style.top = rect.top + scrollY + "px";
+      selectBox.style.left = relLeft + "px";
+      selectBox.style.top = relTop + "px";
       selectBox.style.width = Math.max(4, rect.width) + "px";
       selectBox.style.height = Math.max(4, rect.height) + "px";
       selectBox.classList.toggle("is-editing", editing === selected);
-      selectBox.classList.toggle("is-top-edge", rect.top + scrollY < 24);
+      selectBox.classList.toggle("is-top-edge", relTop < 24);
+      if (editing || dragState) {
+        updateHoverOverlay(null);
+      }
 
       if (moveHandleEl) {
         if (editing === selected || dragState) {
@@ -250,7 +270,7 @@
 
       if (badgeEl) {
         if (dragState && dragState.mode === "move") {
-          badgeEl.textContent = `${Math.round(rect.left + scrollX)}, ${Math.round(rect.top + scrollY)}`;
+          badgeEl.textContent = `${Math.round(relLeft)}, ${Math.round(relTop)}`;
           badgeEl.style.display = "block";
         } else if (dragState && dragState.mode === "resize") {
           badgeEl.textContent = `${Math.round(rect.width)} × ${Math.round(rect.height)}`;
@@ -272,6 +292,11 @@
           body { min-height: 100vh; position: relative; }
           #${UI_ID} {
             position: absolute; inset: 0; pointer-events: none; z-index: 2147483640;
+          }
+          #${UI_ID} .df-hover-box {
+            position: absolute; display: none; box-sizing: border-box;
+            border: 1px dashed rgba(22, 163, 74, 0.65);
+            background: rgba(22, 163, 74, 0.05); pointer-events: none;
           }
           #${UI_ID} .df-select-box {
             position: absolute; display: none; box-sizing: border-box;
@@ -365,10 +390,16 @@
           handleEls[h] = hd;
         }
 
+        hoverBox = doc.createElement("div");
+        hoverBox.className = "df-hover-box";
+        hoverBox.setAttribute("data-df-editor-ui", "1");
+        uiLayer.appendChild(hoverBox);
+
         uiLayer.appendChild(selectBox);
         doc.body.appendChild(uiLayer);
       } else {
         uiLayer = doc.getElementById(UI_ID);
+        hoverBox = uiLayer.querySelector(".df-hover-box");
         selectBox = uiLayer.querySelector(".df-select-box");
         moveHandleEl = uiLayer.querySelector(".df-move-handle");
         badgeEl = uiLayer.querySelector(".df-badge");
@@ -421,12 +452,50 @@
       updateOverlay();
     }
 
-    function resolveSelectableTarget(target) {
+    const INLINE_TAGS = new Set([
+      "SPAN", "STRONG", "B", "EM", "I", "U", "SMALL", "MARK", "SUB", "SUP", "A", "CODE",
+    ]);
+    const TEXT_BLOCK_TAGS = new Set([
+      "P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "DT", "DD", "BLOCKQUOTE", "FIGCAPTION", "LABEL",
+    ]);
+    const TABLE_STRUCT_TAGS = new Set(["TR", "THEAD", "TBODY", "TFOOT"]);
+
+    function hasDirectText(el) {
+      for (const n of el.childNodes) {
+        if (n.nodeType === 3 && n.textContent && n.textContent.trim().length > 0) return true;
+      }
+      return false;
+    }
+
+    function isPageWrapper(el) {
+      if (!el || !doc || !doc.body) return false;
+      if (el === doc.body || el === doc.documentElement) return true;
+      if (el.getAttribute && el.getAttribute("data-df-placed") === "1") return false;
+      if (el.classList && el.classList.contains("pdf-page")) return true;
+      if (!["SECTION", "MAIN", "ARTICLE", "DIV"].includes(el.tagName)) return false;
+      if (el.children.length < 2 || hasDirectText(el)) return false;
+      const er = el.getBoundingClientRect();
+      const br = doc.body.getBoundingClientRect();
+      return (
+        br.width > 0 &&
+        br.height > 0 &&
+        er.width >= br.width * 0.65 &&
+        er.height >= br.height * 0.65
+      );
+    }
+
+    function resolveSelectableTarget(target, clientX, clientY) {
       if (!target || !doc) return null;
-      if (isEditorNode(target)) return null;
+      if (target.nodeType !== 1) target = target.parentElement;
+      if (!target || isEditorNode(target)) return null;
+      if (target === doc.body || target === doc.documentElement) return null;
       if (target.closest) {
         const cell = target.closest("td, th");
         if (cell) return cell;
+      }
+      if (TABLE_STRUCT_TAGS.has(target.tagName) && target.closest) {
+        const tbl = target.closest("table");
+        if (tbl) return tbl;
       }
       let cur = target;
       while (cur && cur !== doc.body && cur !== doc.documentElement) {
@@ -446,36 +515,49 @@
           return svg;
         }
       }
-      if (target === doc.body || target === doc.documentElement) return null;
+      if (INLINE_TAGS.has(target.tagName) && doc.defaultView) {
+        const disp = doc.defaultView.getComputedStyle(target).display;
+        if (
+          disp === "inline" &&
+          target.parentElement &&
+          TEXT_BLOCK_TAGS.has(target.parentElement.tagName)
+        ) {
+          target = target.parentElement;
+        }
+      }
+      if (isPageWrapper(target)) {
+        if (typeof clientX === "number" && typeof clientY === "number" && doc.elementsFromPoint) {
+          const stack = doc.elementsFromPoint(clientX, clientY);
+          for (const cand of stack) {
+            if (
+              cand &&
+              cand !== target &&
+              !isEditorNode(cand) &&
+              cand !== doc.body &&
+              cand !== doc.documentElement &&
+              !isPageWrapper(cand)
+            ) {
+              return resolveSelectableTarget(cand);
+            }
+          }
+        }
+        return null;
+      }
       return target;
     }
 
     function startMove(e, el, pendingCell) {
       if (isTableCell(el)) return;
       e.preventDefault();
-      const win = doc.defaultView;
-      const cs = win.getComputedStyle(el);
-      const isPlaced = el.getAttribute("data-df-placed") === "1";
-      let pos = cs.position;
-      if (pos === "static") {
-        pos = isPlaced ? "absolute" : "relative";
-        el.style.position = pos;
-      }
-      const startLeft = parseFloat(el.style.left) || (pos === "relative" ? 0 : el.offsetLeft);
-      const startTop = parseFloat(el.style.top) || (pos === "relative" ? 0 : el.offsetTop);
-
-      if (doc.body) {
-        doc.body.style.cursor = "grabbing";
-      }
-
       dragState = {
         mode: "move",
         el,
         pendingCell: pendingCell || null,
         startX: e.clientX,
         startY: e.clientY,
-        startLeft,
-        startTop,
+        startLeft: 0,
+        startTop: 0,
+        initialized: false,
         moved: false,
       };
     }
@@ -511,15 +593,37 @@
     }
 
     function onMouseMove(e) {
-      if (!dragState) return;
+      if (!dragState) {
+        if (!editing && e.target) {
+          updateHoverOverlay(resolveSelectableTarget(e.target, e.clientX, e.clientY));
+        }
+        return;
+      }
       const dx = e.clientX - dragState.startX;
       const dy = e.clientY - dragState.startY;
-      if (!dragState.moved && Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+      if (!dragState.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
       dragState.moved = true;
+      updateHoverOverlay(null);
 
       const free = e.altKey;
       const el = dragState.el;
       if (dragState.mode === "move") {
+        if (!dragState.initialized) {
+          const win = doc.defaultView;
+          const cs = win.getComputedStyle(el);
+          const isPlaced = el.getAttribute("data-df-placed") === "1";
+          let pos = cs.position;
+          if (pos === "static") {
+            pos = isPlaced ? "absolute" : "relative";
+            el.style.position = pos;
+          }
+          dragState.startLeft = parseFloat(el.style.left) || (pos === "relative" ? 0 : el.offsetLeft);
+          dragState.startTop = parseFloat(el.style.top) || (pos === "relative" ? 0 : el.offsetTop);
+          if (doc.body) {
+            doc.body.style.cursor = "grabbing";
+          }
+          dragState.initialized = true;
+        }
         el.style.left = snap(dragState.startLeft + dx, free) + "px";
         el.style.top = snap(dragState.startTop + dy, free) + "px";
       } else if (dragState.mode === "resize") {
@@ -685,7 +789,7 @@
           startMove(e, selected, clickedCell);
           return;
         }
-        const target = resolveSelectableTarget(e.target);
+        const target = resolveSelectableTarget(e.target, e.clientX, e.clientY);
         if (!target) {
           selectElement(null);
           return;
@@ -697,11 +801,15 @@
 
       doc.addEventListener("dblclick", (e) => {
         if (isEditorNode(e.target)) return;
-        const target = resolveSelectableTarget(e.target);
+        const target = resolveSelectableTarget(e.target, e.clientX, e.clientY);
         if (target && isTextEditable(target)) {
           e.preventDefault();
           startEditing(target);
         }
+      });
+
+      doc.addEventListener("mouseleave", () => {
+        updateHoverOverlay(null);
       });
 
       doc.addEventListener("input", () => {

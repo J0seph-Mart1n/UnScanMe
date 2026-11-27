@@ -1,13 +1,8 @@
-"use client";
-
-import React, { useState } from "react";
-import { CheckIcon, RocketIcon, StarIcon, ZapIcon } from "./Icons";
-
-type EditorMode = "Cells" | "Rows" | "Export";
+import React from "react";
+import Image from "next/image";
+import { RocketIcon, StarIcon, ZapIcon } from "./Icons";
 
 export function BentoShowcase() {
-  const [mode, setMode] = useState<EditorMode>("Cells");
-
   return (
     <section id="features" className="bento-section" aria-labelledby="features-heading">
       <div className="container">
@@ -26,26 +21,16 @@ export function BentoShowcase() {
               </p>
             </div>
 
-            <div className="phone-mockup phone-mockup-bottom">
-              <div className="phone-notch" aria-hidden="true" />
-              <p className="phone-eyebrow">UnScanMe Studio</p>
-              <h4 className="phone-heading">
-                Your document
-                <br />
-                is ready!
-              </h4>
-              <p className="phone-sub">Clean HTML5 &amp; vector PDF processed offline.</p>
-
-              <div className="phone-lime-card">
-                <div className="phone-lime-top">
-                  <span>Invoice #089</span>
-                  <span className="phone-check-circle" aria-hidden="true">
-                    <CheckIcon className="icon-xs" />
-                  </span>
-                </div>
-                <p className="phone-lime-meta">VECTOR PDF · DESKEWED</p>
-              </div>
-            </div>
+            <figure className="bento-screenshot bento-screenshot-tall">
+              <Image
+                src="/images/screenshot-scan-cleanup.png"
+                alt="UnScanMe desktop application showing a tilted invoice scan inside the white crop box with auto-deskew and rotation controls"
+                width={1080}
+                height={1080}
+                sizes="(max-width: 640px) 100vw, (max-width: 960px) 440px, 340px"
+                className="bento-screenshot-img"
+              />
+            </figure>
           </article>
 
           {/* Card 2: Top-Right Wide Dark-Olive Card */}
@@ -56,50 +41,16 @@ export function BentoShowcase() {
               <p>Click any cell, add rows cleanly, or drag whole tables across the page.</p>
             </div>
 
-            <div className="bento-wide-mockup">
-              <div className="phone-mockup phone-mockup-side">
-                <div className="phone-notch" aria-hidden="true" />
-                <div className="phone-search-pill">Search cells or refine...</div>
-                <p className="phone-metric-label">Detected tables</p>
-                <p className="phone-metric-big">100% editable</p>
-
-                <div className="phone-mode-pills" role="group" aria-label="Editor focus">
-                  {(["Cells", "Rows", "Export"] as EditorMode[]).map((tab) => (
-                    <button
-                      key={tab}
-                      type="button"
-                      className={`phone-mode-pill ${mode === tab ? "is-active" : ""}`}
-                      onClick={() => setMode(tab)}
-                    >
-                      {tab}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="floating-status-pill">
-                <span className="floating-status-label">
-                  {mode === "Cells"
-                    ? "Inline Edit"
-                    : mode === "Rows"
-                      ? "Table Move"
-                      : "Vector Output"}
-                </span>
-                <div className="floating-status-row">
-                  <strong>
-                    {mode === "Cells"
-                      ? "Tab Navigation"
-                      : mode === "Rows"
-                        ? "Snap Grid Ready"
-                        : "Searchable PDF"}
-                  </strong>
-                  <span className="floating-status-badge">
-                    <CheckIcon className="icon-xs" />
-                    <span>Ready</span>
-                  </span>
-                </div>
-              </div>
-            </div>
+            <figure className="bento-screenshot bento-screenshot-wide">
+              <Image
+                src="/images/screenshot-table-editor.png"
+                alt="UnScanMe desktop visual table editor with inline cell editing, row and column controls, and a draggable table selection frame"
+                width={1400}
+                height={920}
+                sizes="(max-width: 640px) 100vw, 440px"
+                className="bento-screenshot-img"
+              />
+            </figure>
           </article>
 
           {/* Card 3: Bottom-Middle Dark-Olive Card */}

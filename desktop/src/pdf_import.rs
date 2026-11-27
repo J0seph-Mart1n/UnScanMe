@@ -1,9 +1,12 @@
-//! PDF-to-Editable-HTML import: page rasterization + structured XHTML/text extraction.
+//! PDF-to-Editable-HTML import: page rasterization, structured XHTML/text extraction, and offline OCR.
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static OCR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PdfPage {
@@ -19,9 +22,77 @@ pub struct LoadedPdf {
     pub active_page: usize,
     pub bbox_xhtml: Option<String>,
     pub plain_text: String,
+    pub cached_has_selectable_text: bool,
+    pub cached_image_only_pages: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtractedPage {
+    Structured(String),
+    NeedsOcr { page_index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdfExtractionPlan {
+    pub pages: Vec<ExtractedPage>,
+}
+
+impl PdfExtractionPlan {
+    pub fn has_any_text(&self) -> bool {
+        self.pages
+            .iter()
+            .any(|p| matches!(p, ExtractedPage::Structured(_)))
+    }
+
+    pub fn image_only_pages(&self) -> Vec<usize> {
+        self.pages
+            .iter()
+            .filter_map(|p| match p {
+                ExtractedPage::NeedsOcr { page_index } => Some(*page_index),
+                ExtractedPage::Structured(_) => None,
+            })
+            .collect()
+    }
+
+    pub fn render_structured_only(&self) -> Option<String> {
+        let structured: Vec<String> = self
+            .pages
+            .iter()
+            .filter_map(|p| match p {
+                ExtractedPage::Structured(html) => Some(html.clone()),
+                ExtractedPage::NeedsOcr { .. } => None,
+            })
+            .collect();
+        if structured.is_empty() {
+            None
+        } else {
+            Some(combine_html_pages(&structured))
+        }
+    }
 }
 
 impl LoadedPdf {
+    pub fn from_parts(
+        path: PathBuf,
+        pages: Vec<PdfPage>,
+        bbox_xhtml: Option<String>,
+        plain_text: String,
+    ) -> Self {
+        let mut pdf = Self {
+            path,
+            pages,
+            active_page: 0,
+            bbox_xhtml,
+            plain_text,
+            cached_has_selectable_text: false,
+            cached_image_only_pages: 0,
+        };
+        let plan = plan_pdf_extraction(&pdf);
+        pdf.cached_has_selectable_text = plan.has_any_text();
+        pdf.cached_image_only_pages = plan.image_only_pages().len();
+        pdf
+    }
+
     pub fn current_page(&self) -> Option<&PdfPage> {
         self.pages.get(self.active_page)
     }
@@ -29,12 +100,24 @@ impl LoadedPdf {
     pub fn page_count(&self) -> usize {
         self.pages.len().max(1)
     }
+
+    pub fn has_selectable_text(&self) -> bool {
+        self.cached_has_selectable_text
+    }
+
+    pub fn image_only_page_count(&self) -> usize {
+        self.cached_image_only_pages
+    }
 }
 
 fn find_tool(names: &[&str]) -> Option<String> {
     if let Some(path_var) = std::env::var_os("PATH") {
         for name in names {
-            let exe = if cfg!(windows) { format!("{name}.exe") } else { (*name).to_string() };
+            let exe = if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                (*name).to_string()
+            };
             for dir in std::env::split_paths(&path_var) {
                 let p = dir.join(&exe);
                 if p.is_file() {
@@ -50,6 +133,7 @@ fn find_tool(names: &[&str]) -> Option<String> {
         &[
             r"C:\Program Files\poppler\Library\bin",
             r"C:\Program Files\poppler\bin",
+            r"C:\Program Files\Tesseract-OCR",
             r"C:\ProgramData\chocolatey\bin",
         ]
     } else {
@@ -58,7 +142,11 @@ fn find_tool(names: &[&str]) -> Option<String> {
 
     for dir in extra_dirs {
         for name in names {
-            let exe = if cfg!(windows) { format!("{name}.exe") } else { (*name).to_string() };
+            let exe = if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                (*name).to_string()
+            };
             let p = Path::new(dir).join(&exe);
             if p.is_file() {
                 return Some(p.to_string_lossy().into_owned());
@@ -68,9 +156,36 @@ fn find_tool(names: &[&str]) -> Option<String> {
     None
 }
 
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+struct AbortOnDrop(Vec<tokio::task::AbortHandle>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        for handle in &self.0 {
+            handle.abort();
+        }
+    }
+}
+
 async fn render_pdf_pages(pdf_path: &Path) -> Result<Vec<PdfPage>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let work_dir = std::env::temp_dir().join(format!("df_pdf_import_{}_{stamp}", std::process::id()));
+    let _guard = TempDirGuard(work_dir.clone());
     tokio::fs::create_dir_all(&work_dir).await?;
     let prefix = work_dir.join("page");
 
@@ -78,6 +193,7 @@ async fn render_pdf_pages(pdf_path: &Path) -> Result<Vec<PdfPage>> {
 
     if let Some(pdftoppm) = find_tool(&["pdftoppm"]) {
         if let Ok(out) = tokio::process::Command::new(&pdftoppm)
+            .kill_on_drop(true)
             .args(["-png", "-r", "150"])
             .arg(pdf_path)
             .arg(&prefix)
@@ -93,6 +209,7 @@ async fn render_pdf_pages(pdf_path: &Path) -> Result<Vec<PdfPage>> {
     if !rendered_ok {
         if let Some(pdftocairo) = find_tool(&["pdftocairo"]) {
             if let Ok(out) = tokio::process::Command::new(&pdftocairo)
+                .kill_on_drop(true)
                 .args(["-png", "-r", "150"])
                 .arg(pdf_path)
                 .arg(&prefix)
@@ -110,6 +227,7 @@ async fn render_pdf_pages(pdf_path: &Path) -> Result<Vec<PdfPage>> {
         if let Some(mutool) = find_tool(&["mutool"]) {
             let pattern = work_dir.join("page-%04d.png");
             if let Ok(out) = tokio::process::Command::new(&mutool)
+                .kill_on_drop(true)
                 .args(["draw", "-F", "png", "-r", "150", "-o"])
                 .arg(&pattern)
                 .arg(pdf_path)
@@ -127,6 +245,7 @@ async fn render_pdf_pages(pdf_path: &Path) -> Result<Vec<PdfPage>> {
         if let Some(gs) = find_tool(&["gs", "gswin64c", "gswin32c"]) {
             let pattern = work_dir.join("page-%04d.png");
             if let Ok(out) = tokio::process::Command::new(&gs)
+                .kill_on_drop(true)
                 .args([
                     "-dNOPAUSE",
                     "-dBATCH",
@@ -182,10 +301,9 @@ async fn render_pdf_pages(pdf_path: &Path) -> Result<Vec<PdfPage>> {
         }
     }
 
-    let _ = tokio::fs::remove_dir_all(&work_dir).await;
     if pages.is_empty() && !rendered_ok {
         bail!(
-            "Could not rasterize PDF pages. Install Poppler (`pdftoppm`) or Ghostscript (`gs`), or use Quick Extract HTML if text is selectable."
+            "Could not rasterize PDF pages. Install Poppler (`pdftoppm`) or Ghostscript (`gs`), or extract if text is selectable."
         );
     }
     Ok(pages)
@@ -197,6 +315,7 @@ async fn extract_bbox_and_text(pdf_path: &Path) -> (Option<String>, String) {
 
     if let Some(pdftotext) = find_tool(&["pdftotext"]) {
         if let Ok(out) = tokio::process::Command::new(&pdftotext)
+            .kill_on_drop(true)
             .arg("-bbox-layout")
             .arg(pdf_path)
             .arg("-")
@@ -211,15 +330,20 @@ async fn extract_bbox_and_text(pdf_path: &Path) -> (Option<String>, String) {
             }
         }
 
-        if let Ok(out) = tokio::process::Command::new(&pdftotext)
-            .arg("-layout")
-            .arg(pdf_path)
-            .arg("-")
-            .output()
-            .await
-        {
-            if out.status.success() {
-                plain_text = String::from_utf8_lossy(&out.stdout).into_owned();
+        // Skip redundant plain-text pass if bbox-layout already extracted words.
+        let has_bbox_words = bbox_xhtml.as_deref().is_some_and(|x| x.contains("<word "));
+        if !has_bbox_words {
+            if let Ok(out) = tokio::process::Command::new(&pdftotext)
+                .kill_on_drop(true)
+                .arg("-layout")
+                .arg(pdf_path)
+                .arg("-")
+                .output()
+                .await
+            {
+                if out.status.success() {
+                    plain_text = String::from_utf8_lossy(&out.stdout).into_owned();
+                }
             }
         }
     }
@@ -266,35 +390,77 @@ pub async fn import_pdf(path: &Path) -> Result<LoadedPdf> {
         }
     };
 
-    Ok(LoadedPdf {
-        path: path.to_path_buf(),
+    Ok(LoadedPdf::from_parts(
+        path.to_path_buf(),
         pages,
-        active_page: 0,
         bbox_xhtml,
         plain_text,
-    })
+    ))
 }
 
-/// Convert a `LoadedPdf` directly into structured, editable HTML5 (offline, no AI required).
-pub fn extract_editable_html(pdf: &LoadedPdf) -> String {
-    if let Some(bbox) = pdf.bbox_xhtml.as_deref() {
-        let html = parse_bbox_xhtml_to_html(bbox, &pdf.pages);
-        if !html.trim().is_empty() {
-            return html;
+/// Build an explicit per-page extraction plan so image-only pages are routed to AI/OCR
+/// instead of being wrapped into flat non-editable `<img>` elements.
+pub fn plan_pdf_extraction(pdf: &LoadedPdf) -> PdfExtractionPlan {
+    let parsed_bbox_pages = pdf
+        .bbox_xhtml
+        .as_deref()
+        .map(parse_bbox_pages)
+        .unwrap_or_default();
+    let median_font = estimate_median_font(&parsed_bbox_pages);
+
+    let plain_pages: Vec<&str> = if pdf.plain_text.trim().is_empty() {
+        Vec::new()
+    } else {
+        pdf.plain_text.split('\x0c').collect()
+    };
+
+    let total_pages = parsed_bbox_pages
+        .len()
+        .max(plain_pages.len())
+        .max(pdf.pages.len())
+        .max(1);
+
+    let mut pages = Vec::with_capacity(total_pages);
+    for idx in 0..total_pages {
+        if let Some(lines) = parsed_bbox_pages.get(idx).filter(|ls| !ls.is_empty()) {
+            pages.push(ExtractedPage::Structured(lines_to_section_html(
+                lines,
+                median_font,
+            )));
+            continue;
         }
+        if let Some(trimmed) = plain_pages
+            .get(idx)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            pages.push(ExtractedPage::Structured(plain_text_section_html(trimmed)));
+            continue;
+        }
+        pages.push(ExtractedPage::NeedsOcr { page_index: idx });
     }
-    plain_text_to_html(&pdf.plain_text, &pdf.pages)
+
+    PdfExtractionPlan { pages }
 }
 
-// --- Structured BBox XHTML -> Editable HTML5 -------------------------------
+/// Convert any selectable-text pages of `LoadedPdf` directly into structured HTML5.
+/// Never emits non-editable full-page `<img>` wrappers.
+#[cfg(test)]
+pub fn extract_editable_html(pdf: &LoadedPdf) -> String {
+    plan_pdf_extraction(pdf)
+        .render_structured_only()
+        .unwrap_or_default()
+}
+
+// --- Structured WordBox / LineBox -> Editable HTML5 ------------------------
 
 #[derive(Debug, Clone)]
-struct WordBox {
-    x_min: f32,
-    y_min: f32,
-    x_max: f32,
-    y_max: f32,
-    text: String,
+pub struct WordBox {
+    pub x_min: f32,
+    pub y_min: f32,
+    pub x_max: f32,
+    pub y_max: f32,
+    pub text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -338,21 +504,31 @@ impl LineBox {
     }
 
     fn full_text(&self) -> String {
-        self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")
+        self.words
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn y_min(&self) -> f32 {
-        self.words.iter().map(|w| w.y_min).fold(f32::INFINITY, f32::min)
+        self.words
+            .iter()
+            .map(|w| w.y_min)
+            .fold(f32::INFINITY, f32::min)
     }
 
     fn y_max(&self) -> f32 {
-        self.words.iter().map(|w| w.y_max).fold(f32::NEG_INFINITY, f32::max)
+        self.words
+            .iter()
+            .map(|w| w.y_max)
+            .fold(f32::NEG_INFINITY, f32::max)
     }
 }
 
 /// Group all words on a page into visual horizontal lines by overlapping Y coordinates.
-/// This is essential because Poppler's `pdftotext -bbox-layout` splits multi-column
-/// tables into separate `<flow>` / `<block>` elements instead of keeping row words together.
+/// Essential because Poppler's `pdftotext -bbox-layout` splits multi-column tables
+/// into separate `<flow>` / `<block>` elements, and OCR emits unordered/row words.
 fn cluster_words_into_lines(mut words: Vec<WordBox>) -> Vec<LineBox> {
     if words.is_empty() {
         return Vec::new();
@@ -430,7 +606,6 @@ fn build_table_columns(rows: &[Vec<(f32, f32, String)>]) -> Vec<(f32, f32)> {
     let mut cols: Vec<(f32, f32)> = Vec::new();
     for (x0, x1) in intervals {
         if let Some(last) = cols.last_mut() {
-            // Merge into the same column if X-intervals overlap (within 4pt tolerance)
             if x0 <= last.1 + 4.0 {
                 last.1 = last.1.max(x1);
                 continue;
@@ -441,7 +616,7 @@ fn build_table_columns(rows: &[Vec<(f32, f32, String)>]) -> Vec<(f32, f32)> {
     cols
 }
 
-pub fn parse_bbox_xhtml_to_html(xhtml: &str, pages: &[PdfPage]) -> String {
+fn parse_bbox_pages(xhtml: &str) -> Vec<Vec<LineBox>> {
     let mut parsed_pages: Vec<Vec<LineBox>> = Vec::new();
     let mut rest = xhtml;
 
@@ -487,261 +662,488 @@ pub fn parse_bbox_xhtml_to_html(xhtml: &str, pages: &[PdfPage]) -> String {
         parsed_pages.push(cluster_words_into_lines(page_words));
     }
 
-    if parsed_pages.is_empty() {
-        return String::new();
-    }
+    parsed_pages
+}
 
-    // Estimate median body font size across all lines
-    let mut all_sizes: Vec<f32> = parsed_pages
+fn estimate_median_font(pages: &[Vec<LineBox>]) -> f32 {
+    let mut all_sizes: Vec<f32> = pages
         .iter()
         .flat_map(|ls| ls.iter().map(|l| l.font_px))
         .collect();
     all_sizes.sort_by(|a, b| a.total_cmp(b));
-    let median_font = if all_sizes.is_empty() {
+    if all_sizes.is_empty() {
         12.0
     } else {
         all_sizes[all_sizes.len() / 2]
-    };
-
-    let mut body_sections = Vec::new();
-    for (idx, lines) in parsed_pages.iter().enumerate() {
-        let mut section = String::new();
-        section.push_str("<section class=\"pdf-page\">\n");
-
-        if lines.is_empty() {
-            if let Some(page_img) = pages.get(idx) {
-                section.push_str(&format!(
-                    "  <div style=\"text-align:center;\"><img src=\"{}\" alt=\"Imported PDF Page {}\" style=\"max-width:100%;height:auto;\"></div>\n",
-                    page_img.preview,
-                    idx + 1
-                ));
-            } else {
-                section.push_str("  <p>(Blank page)</p>\n");
-            }
-            section.push_str("</section>");
-            body_sections.push(section);
-            continue;
-        }
-
-        let mut i = 0;
-        while i < lines.len() {
-            let cols = lines[i].split_columns(lines[i].gap_threshold());
-            if cols.len() >= 2 {
-                // Collect consecutive multi-column lines as an editable HTML table
-                let mut rows: Vec<Vec<(f32, f32, String)>> = vec![cols];
-                let mut j = i + 1;
-                while j < lines.len() {
-                    let next_cols = lines[j].split_columns(lines[j].gap_threshold());
-                    if next_cols.len() >= 2 {
-                        rows.push(next_cols);
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                if rows.len() >= 2 {
-                    let col_buckets = build_table_columns(&rows);
-                    let col_count = col_buckets.len().max(2);
-                    section.push_str("  <table>\n");
-                    for (r_idx, row) in rows.iter().enumerate() {
-                        let mut cells = vec![String::new(); col_count];
-                        for (cx0, cx1, text) in row {
-                            let center = (*cx0 + *cx1) * 0.5;
-                            let target_idx = col_buckets
-                                .iter()
-                                .position(|&(b0, b1)| *cx0 <= b1 + 4.0 && *cx1 >= b0 - 4.0)
-                                .unwrap_or_else(|| {
-                                    col_buckets
-                                        .iter()
-                                        .enumerate()
-                                        .min_by(|(_, a), (_, b)| {
-                                            let da = ((a.0 + a.1) * 0.5 - center).abs();
-                                            let db = ((b.0 + b.1) * 0.5 - center).abs();
-                                            da.total_cmp(&db)
-                                        })
-                                        .map(|(k, _)| k)
-                                        .unwrap_or(0)
-                                });
-                            if !cells[target_idx].is_empty() {
-                                cells[target_idx].push(' ');
-                            }
-                            cells[target_idx].push_str(text);
-                        }
-
-                        section.push_str("    <tr>");
-                        let tag = if r_idx == 0 { "th" } else { "td" };
-                        for cell in &cells {
-                            section.push_str(&format!("<{tag}>{}</{tag}>", escape_html(cell)));
-                        }
-                        section.push_str("</tr>\n");
-                    }
-                    section.push_str("  </table>\n");
-                    i = j;
-                    continue;
-                }
-            }
-
-            let line = &lines[i];
-            let text = line.full_text();
-            if line.font_px >= median_font * 1.45 && text.len() < 120 {
-                section.push_str(&format!("  <h1>{}</h1>\n", escape_html(&text)));
-                i += 1;
-            } else if line.font_px >= median_font * 1.2 && text.len() < 120 {
-                section.push_str(&format!("  <h2>{}</h2>\n", escape_html(&text)));
-                i += 1;
-            } else {
-                // Merge consecutive single-column lines separated by small vertical gaps into a paragraph
-                let mut para = text;
-                let mut prev_y = line.y_max();
-                let mut j = i + 1;
-                while j < lines.len() {
-                    let next = &lines[j];
-                    if next.split_columns(next.gap_threshold()).len() >= 2
-                        && j + 1 < lines.len()
-                        && lines[j + 1].split_columns(lines[j + 1].gap_threshold()).len() >= 2
-                    {
-                        break;
-                    }
-                    if next.font_px >= median_font * 1.2 {
-                        break;
-                    }
-                    let next_y_min = next.y_min();
-                    let gap = next_y_min - prev_y;
-                    if gap > line.font_px * 0.9 {
-                        break;
-                    }
-                    para.push(' ');
-                    para.push_str(&next.full_text());
-                    prev_y = next.y_max();
-                    j += 1;
-                }
-                section.push_str(&format!("  <p>{}</p>\n", escape_html(&para)));
-                i = j;
-            }
-        }
-
-        section.push_str("</section>");
-        body_sections.push(section);
     }
-
-    wrap_imported_html(&body_sections.join("\n<hr class=\"page-sep\">\n"))
 }
 
-pub fn plain_text_to_html(text: &str, pages: &[PdfPage]) -> String {
-    let raw_pages: Vec<&str> = text.split('\x0c').collect();
-    let mut sections = Vec::new();
-
-    for (idx, page_text) in raw_pages.iter().enumerate() {
-        let trimmed = page_text.trim();
-        if trimmed.is_empty() {
-            if let Some(img) = pages.get(idx) {
-                sections.push(format!(
-                    "<section class=\"pdf-page\">\n  <div style=\"text-align:center;\"><img src=\"{}\" alt=\"Imported PDF Page {}\" style=\"max-width:100%;height:auto;\"></div>\n</section>",
-                    img.preview,
-                    idx + 1
-                ));
+fn lines_to_section_html(lines: &[LineBox], median_font: f32) -> String {
+    let mut section = String::from("<section class=\"pdf-page\">\n");
+    let mut i = 0;
+    while i < lines.len() {
+        let cols = lines[i].split_columns(lines[i].gap_threshold());
+        if cols.len() >= 2 {
+            let mut rows: Vec<Vec<(f32, f32, String)>> = vec![cols];
+            let mut j = i + 1;
+            while j < lines.len() {
+                let next_cols = lines[j].split_columns(lines[j].gap_threshold());
+                if next_cols.len() >= 2 {
+                    rows.push(next_cols);
+                    j += 1;
+                } else {
+                    break;
+                }
             }
+
+            if rows.len() >= 2 {
+                let col_buckets = build_table_columns(&rows);
+                let col_count = col_buckets.len().max(2);
+                section.push_str("  <table>\n");
+                for (r_idx, row) in rows.iter().enumerate() {
+                    let mut cells = vec![String::new(); col_count];
+                    for (cx0, cx1, text) in row {
+                        let center = (*cx0 + *cx1) * 0.5;
+                        let target_idx = col_buckets
+                            .iter()
+                            .position(|&(b0, b1)| *cx0 <= b1 + 4.0 && *cx1 >= b0 - 4.0)
+                            .unwrap_or_else(|| {
+                                col_buckets
+                                    .iter()
+                                    .enumerate()
+                                    .min_by(|(_, a), (_, b)| {
+                                        let da = ((a.0 + a.1) * 0.5 - center).abs();
+                                        let db = ((b.0 + b.1) * 0.5 - center).abs();
+                                        da.total_cmp(&db)
+                                    })
+                                    .map(|(k, _)| k)
+                                    .unwrap_or(0)
+                            });
+                        if !cells[target_idx].is_empty() {
+                            cells[target_idx].push(' ');
+                        }
+                        cells[target_idx].push_str(text);
+                    }
+
+                    section.push_str("    <tr>");
+                    let tag = if r_idx == 0 { "th" } else { "td" };
+                    for cell in &cells {
+                        section.push_str(&format!("<{tag}>{}</{tag}>", escape_html(cell)));
+                    }
+                    section.push_str("</tr>\n");
+                }
+                section.push_str("  </table>\n");
+                i = j;
+                continue;
+            }
+        }
+
+        let line = &lines[i];
+        let text = line.full_text();
+        if line.font_px >= median_font * 1.45 && text.len() < 120 {
+            section.push_str(&format!("  <h1>{}</h1>\n", escape_html(&text)));
+            i += 1;
+        } else if line.font_px >= median_font * 1.2 && text.len() < 120 {
+            section.push_str(&format!("  <h2>{}</h2>\n", escape_html(&text)));
+            i += 1;
+        } else {
+            let mut para = text;
+            let mut prev_y = line.y_max();
+            let mut j = i + 1;
+            while j < lines.len() {
+                let next = &lines[j];
+                if next.split_columns(next.gap_threshold()).len() >= 2
+                    && j + 1 < lines.len()
+                    && lines[j + 1]
+                        .split_columns(lines[j + 1].gap_threshold())
+                        .len()
+                        >= 2
+                {
+                    break;
+                }
+                if next.font_px >= median_font * 1.2 {
+                    break;
+                }
+                let next_y_min = next.y_min();
+                let gap = next_y_min - prev_y;
+                if gap > line.font_px * 0.9 {
+                    break;
+                }
+                para.push(' ');
+                para.push_str(&next.full_text());
+                prev_y = next.y_max();
+                j += 1;
+            }
+            section.push_str(&format!("  <p>{}</p>\n", escape_html(&para)));
+            i = j;
+        }
+    }
+
+    section.push_str("</section>");
+    section
+}
+
+#[cfg(test)]
+pub fn parse_bbox_xhtml_to_html(xhtml: &str, _pages: &[PdfPage]) -> String {
+    let parsed_pages = parse_bbox_pages(xhtml);
+    if parsed_pages.is_empty() {
+        return String::new();
+    }
+    let median_font = estimate_median_font(&parsed_pages);
+    let body_sections: Vec<String> = parsed_pages
+        .iter()
+        .filter(|lines| !lines.is_empty())
+        .map(|lines| lines_to_section_html(lines, median_font))
+        .collect();
+    if body_sections.is_empty() {
+        String::new()
+    } else {
+        wrap_imported_html(&body_sections.join("\n<hr class=\"page-sep\">\n"))
+    }
+}
+
+fn plain_text_section_html(trimmed: &str) -> String {
+    let mut sec = String::from("<section class=\"pdf-page\">\n");
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.is_empty() {
+            i += 1;
             continue;
         }
 
-        let mut sec = String::from("<section class=\"pdf-page\">\n");
-        let lines: Vec<&str> = trimmed.lines().collect();
-        let mut i = 0;
-        while i < lines.len() {
-            let line = lines[i].trim();
-            if line.is_empty() {
-                i += 1;
+        let split_spaces = |l: &str| -> Vec<String> {
+            let mut cells = Vec::new();
+            let mut cur = String::new();
+            let mut spaces = 0usize;
+            for ch in l.chars() {
+                if ch == ' ' || ch == '\t' {
+                    spaces += 1;
+                    if ch == '\t' {
+                        spaces += 2;
+                    }
+                } else {
+                    if spaces >= 3 && !cur.is_empty() {
+                        cells.push(cur.trim().to_string());
+                        cur.clear();
+                    } else if spaces > 0 && !cur.is_empty() {
+                        cur.push(' ');
+                    }
+                    spaces = 0;
+                    cur.push(ch);
+                }
+            }
+            if !cur.trim().is_empty() {
+                cells.push(cur.trim().to_string());
+            }
+            cells
+        };
+
+        let cols = split_spaces(line);
+        if cols.len() >= 2 {
+            let mut rows = vec![cols];
+            let mut j = i + 1;
+            while j < lines.len() {
+                let nl = lines[j].trim();
+                if nl.is_empty() {
+                    break;
+                }
+                let nc = split_spaces(nl);
+                if nc.len() >= 2 {
+                    rows.push(nc);
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if rows.len() >= 2 {
+                let max_c = rows.iter().map(|r| r.len()).max().unwrap_or(2);
+                sec.push_str("  <table>\n");
+                for (r_idx, row) in rows.iter().enumerate() {
+                    let tag = if r_idx == 0 { "th" } else { "td" };
+                    sec.push_str("    <tr>");
+                    for c in 0..max_c {
+                        let val = row.get(c).map(|s| s.as_str()).unwrap_or("");
+                        sec.push_str(&format!("<{tag}>{}</{tag}>", escape_html(val)));
+                    }
+                    sec.push_str("</tr>\n");
+                }
+                sec.push_str("  </table>\n");
+                i = j;
                 continue;
             }
-
-            let split_spaces = |l: &str| -> Vec<String> {
-                let mut cells = Vec::new();
-                let mut cur = String::new();
-                let mut spaces = 0usize;
-                for ch in l.chars() {
-                    if ch == ' ' || ch == '\t' {
-                        spaces += 1;
-                        if ch == '\t' {
-                            spaces += 2;
-                        }
-                    } else {
-                        if spaces >= 3 && !cur.is_empty() {
-                            cells.push(cur.trim().to_string());
-                            cur.clear();
-                        } else if spaces > 0 && !cur.is_empty() {
-                            cur.push(' ');
-                        }
-                        spaces = 0;
-                        cur.push(ch);
-                    }
-                }
-                if !cur.trim().is_empty() {
-                    cells.push(cur.trim().to_string());
-                }
-                cells
-            };
-
-            let cols = split_spaces(line);
-            if cols.len() >= 2 {
-                let mut rows = vec![cols];
-                let mut j = i + 1;
-                while j < lines.len() {
-                    let nl = lines[j].trim();
-                    if nl.is_empty() {
-                        break;
-                    }
-                    let nc = split_spaces(nl);
-                    if nc.len() >= 2 {
-                        rows.push(nc);
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                if rows.len() >= 2 {
-                    let max_c = rows.iter().map(|r| r.len()).max().unwrap_or(2);
-                    sec.push_str("  <table>\n");
-                    for (r_idx, row) in rows.iter().enumerate() {
-                        let tag = if r_idx == 0 { "th" } else { "td" };
-                        sec.push_str("    <tr>");
-                        for c in 0..max_c {
-                            let val = row.get(c).map(|s| s.as_str()).unwrap_or("");
-                            sec.push_str(&format!("<{tag}>{}</{tag}>", escape_html(val)));
-                        }
-                        sec.push_str("</tr>\n");
-                    }
-                    sec.push_str("  </table>\n");
-                    i = j;
-                    continue;
-                }
-            }
-
-            if i == 0 && line.len() < 80 {
-                sec.push_str(&format!("  <h1>{}</h1>\n", escape_html(line)));
-            } else {
-                sec.push_str(&format!("  <p>{}</p>\n", escape_html(line)));
-            }
-            i += 1;
         }
-        sec.push_str("</section>");
-        sections.push(sec);
-    }
 
+        if i == 0 && line.len() < 80 {
+            sec.push_str(&format!("  <h1>{}</h1>\n", escape_html(line)));
+        } else {
+            sec.push_str(&format!("  <p>{}</p>\n", escape_html(line)));
+        }
+        i += 1;
+    }
+    sec.push_str("</section>");
+    sec
+}
+
+#[cfg(test)]
+pub fn plain_text_to_html(text: &str, _pages: &[PdfPage]) -> String {
+    let sections: Vec<String> = text
+        .split('\x0c')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(plain_text_section_html)
+        .collect();
     if sections.is_empty() {
-        for (idx, img) in pages.iter().enumerate() {
-            sections.push(format!(
-                "<section class=\"pdf-page\">\n  <div style=\"text-align:center;\"><img src=\"{}\" alt=\"Imported PDF Page {}\" style=\"max-width:100%;height:auto;\"></div>\n</section>",
-                img.preview,
-                idx + 1
-            ));
+        String::new()
+    } else {
+        wrap_imported_html(&sections.join("\n<hr class=\"page-sep\">\n"))
+    }
+}
+
+// --- Offline Tesseract TSV OCR Fallback ------------------------------------
+
+/// Parse Tesseract `--psm 6 tsv` output into positioned `WordBox` entries.
+pub fn parse_tesseract_tsv_to_words(tsv: &str) -> Vec<WordBox> {
+    let mut words = Vec::new();
+    for line in tsv.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 12 {
+            continue;
+        }
+        let Ok(level) = parts[0].trim().parse::<u32>() else {
+            continue;
+        };
+        if level != 5 {
+            continue;
+        }
+        let conf = parts[10].trim().parse::<f32>().unwrap_or(-1.0);
+        if conf < 0.0 {
+            continue;
+        }
+        let text = parts[11..].join("\t").trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let Ok(left) = parts[6].trim().parse::<f32>() else {
+            continue;
+        };
+        let Ok(top) = parts[7].trim().parse::<f32>() else {
+            continue;
+        };
+        let Ok(width) = parts[8].trim().parse::<f32>() else {
+            continue;
+        };
+        let Ok(height) = parts[9].trim().parse::<f32>() else {
+            continue;
+        };
+        if width <= 0.0 || height <= 0.0 {
+            continue;
+        }
+        words.push(WordBox {
+            x_min: left,
+            y_min: top,
+            x_max: left + width,
+            y_max: top + height,
+            text,
+        });
+    }
+    words
+}
+
+/// Convert Tesseract TSV OCR output into an editable `<section class="pdf-page">...</section>`.
+pub fn tesseract_tsv_to_section_html(tsv: &str) -> Option<String> {
+    let words = parse_tesseract_tsv_to_words(tsv);
+    if words.is_empty() {
+        return None;
+    }
+    let lines = cluster_words_into_lines(words);
+    if lines.is_empty() {
+        return None;
+    }
+    let median_font = estimate_median_font(std::slice::from_ref(&lines));
+    Some(lines_to_section_html(&lines, median_font))
+}
+
+/// Returns `true` if a local `tesseract` binary is available on this system.
+pub fn has_tesseract() -> bool {
+    find_tool(&["tesseract"]).is_some()
+}
+
+/// Run local `tesseract` CLI (if installed) on rasterized page PNG bytes to build editable HTML.
+pub async fn ocr_png_bytes_to_section(png_bytes: &[u8]) -> Result<Option<String>> {
+    let Some(tesseract) = find_tool(&["tesseract"]) else {
+        return Ok(None);
+    };
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let seq = OCR_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_png = std::env::temp_dir().join(format!(
+        "unscanme_ocr_{}_{}_{}.png",
+        std::process::id(),
+        stamp,
+        seq
+    ));
+    let _guard = TempFileGuard(tmp_png.clone());
+    tokio::fs::write(&tmp_png, png_bytes)
+        .await
+        .context("failed to stage temporary image for Tesseract OCR")?;
+
+    let out = tokio::process::Command::new(&tesseract)
+        .kill_on_drop(true)
+        .env("OMP_THREAD_LIMIT", "1")
+        .arg(&tmp_png)
+        .args(["stdout", "--psm", "6", "tsv"])
+        .output()
+        .await
+        .context("failed to invoke Tesseract OCR")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        bail!("Tesseract OCR failed: {}", err.trim());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(tesseract_tsv_to_section_html(&stdout))
+}
+
+/// Run offline Tesseract OCR in parallel (up to 4 concurrent pages) across `(page_index, png_bytes)`,
+/// reporting `(completed_pages, total_pages)` progress after each batch completes.
+pub async fn ocr_pages_parallel_with_progress<F>(
+    pages: &[(usize, Vec<u8>)],
+    mut on_progress: F,
+) -> Result<Vec<(usize, Option<String>)>>
+where
+    F: FnMut(usize, usize),
+{
+    if pages.is_empty() || !has_tesseract() {
+        return Ok(pages.iter().map(|(idx, _)| (*idx, None)).collect());
+    }
+
+    let total = pages.len();
+    let mut out = Vec::with_capacity(total);
+    for chunk in pages.chunks(4) {
+        let mut abort_guard = AbortOnDrop(Vec::with_capacity(chunk.len()));
+        let mut handles = Vec::with_capacity(chunk.len());
+        for (page_idx, bytes) in chunk {
+            let idx = *page_idx;
+            let png = bytes.clone();
+            let jh = tokio::spawn(async move {
+                let res = ocr_png_bytes_to_section(&png).await;
+                (idx, res)
+            });
+            abort_guard.0.push(jh.abort_handle());
+            handles.push(jh);
+        }
+        for handle in handles {
+            let (idx, res) = handle.await.context("OCR task panicked")?;
+            out.push((idx, res?));
+        }
+        abort_guard.0.clear();
+        on_progress(out.len(), total);
+    }
+    out.sort_by_key(|(idx, _)| *idx);
+    Ok(out)
+}
+
+#[cfg(test)]
+pub async fn ocr_pages_parallel(pages: &[(usize, Vec<u8>)]) -> Result<Vec<(usize, Option<String>)>> {
+    ocr_pages_parallel_with_progress(pages, |_, _| {}).await
+}
+
+// --- Multi-Page HTML Combiner ----------------------------------------------
+
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let h_low = haystack.to_ascii_lowercase();
+    h_low.find(&needle.to_ascii_lowercase())
+}
+
+fn extract_tag_inner(doc: &str, tag: &str) -> Option<String> {
+    let open_pat = format!("<{tag}");
+    let close_pat = format!("</{tag}>");
+    let start = find_ci(doc, &open_pat)?;
+    let gt_rel = doc[start..].find('>')?;
+    let content_start = start + gt_rel + 1;
+    let end = find_ci(&doc[content_start..], &close_pat)?;
+    Some(doc[content_start..content_start + end].trim().to_string())
+}
+
+fn extract_all_styles(doc: &str) -> Vec<String> {
+    let mut styles = Vec::new();
+    let mut rest = doc;
+    while let Some(start) = find_ci(rest, "<style") {
+        let after = &rest[start..];
+        let Some(gt_rel) = after.find('>') else {
+            break;
+        };
+        let body_start = start + gt_rel + 1;
+        let Some(close_rel) = find_ci(&rest[body_start..], "</style>") else {
+            break;
+        };
+        let css = rest[body_start..body_start + close_rel].trim();
+        if !css.is_empty() {
+            styles.push(css.to_string());
+        }
+        rest = &rest[body_start + close_rel + "</style>".len()..];
+    }
+    styles
+}
+
+/// Combine mixed structured `<section>` fragments and/or full AI-generated HTML5 documents
+/// into a single self-contained editable HTML5 document.
+pub fn combine_html_pages(pages: &[String]) -> String {
+    if pages.is_empty() {
+        return String::new();
+    }
+    if pages.len() == 1 {
+        let single = pages[0].trim();
+        if find_ci(single, "<!doctype").is_some() || find_ci(single, "<html").is_some() {
+            return pages[0].clone();
+        }
+        return wrap_imported_html(single);
+    }
+
+    let mut extra_styles = Vec::new();
+    let mut body_parts = Vec::new();
+
+    for page in pages {
+        let trimmed = page.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if find_ci(trimmed, "<html").is_some() || find_ci(trimmed, "<body").is_some() {
+            for css in extract_all_styles(trimmed) {
+                if !extra_styles.contains(&css) {
+                    extra_styles.push(css);
+                }
+            }
+            if let Some(body) = extract_tag_inner(trimmed, "body") {
+                if !body.is_empty() {
+                    body_parts.push(format!("<section class=\"pdf-page\">\n{body}\n</section>"));
+                }
+            }
+        } else {
+            body_parts.push(trimmed.to_string());
         }
     }
 
-    wrap_imported_html(&sections.join("\n<hr class=\"page-sep\">\n"))
+    if body_parts.is_empty() {
+        return String::new();
+    }
+
+    wrap_imported_html_with_extra_styles(
+        &body_parts.join("\n<hr class=\"page-sep\">\n"),
+        &extra_styles,
+    )
 }
 
 fn wrap_imported_html(body: &str) -> String {
+    wrap_imported_html_with_extra_styles(body, &[])
+}
+
+fn wrap_imported_html_with_extra_styles(body: &str, extra_styles: &[String]) -> String {
+    let extra_css_block = if extra_styles.is_empty() {
+        String::new()
+    } else {
+        format!("\n<style>\n{}\n</style>", extra_styles.join("\n\n"))
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -789,7 +1191,7 @@ fn wrap_imported_html(body: &str) -> String {
     body {{ padding: 0; }}
     .page-sep {{ visibility: hidden; margin: 0; }}
   }}
-</style>
+</style>{extra_css_block}
 </head>
 <body>
 {body}
@@ -833,7 +1235,6 @@ pub fn extract_pdf_text_fallback(bytes: &[u8]) -> String {
                 }
                 i += 1;
             }
-            // Only collect if followed shortly by Tj or TJ or '
             let tail: String = chars[i..chars.len().min(i + 12)].iter().collect();
             if tail.contains("Tj") || tail.contains("TJ") || tail.contains('\'') {
                 let trimmed = buf.trim();
@@ -896,7 +1297,6 @@ mod tests {
 
     #[test]
     fn parses_poppler_split_flows_into_aligned_table_rows() {
-        // Real `pdftotext -bbox-layout` splits multi-column tables into separate <flow> blocks.
         let xhtml = r#"<!DOCTYPE html>
 <html><body><doc>
   <page width="612" height="792">
@@ -939,6 +1339,75 @@ mod tests {
         let pdf_bytes = b"%PDF-1.4\nBT /F1 12 Tf 72 720 Td (Hello UnScanMe!) Tj ET\n";
         let extracted = extract_pdf_text_fallback(pdf_bytes);
         assert_eq!(extracted, "Hello UnScanMe!");
+    }
+
+    #[test]
+    fn scanned_pdf_never_emits_flat_page_image_and_marks_needs_ocr() {
+        let pdf = LoadedPdf::from_parts(
+            PathBuf::from("scanned_invoice.pdf"),
+            vec![PdfPage {
+                page_number: 1,
+                png_bytes: vec![1, 2, 3],
+                preview: "data:image/png;base64,AQID".into(),
+            }],
+            Some(r#"<doc><page width="595" height="842"></page></doc>"#.into()),
+            String::new(),
+        );
+
+        assert!(!pdf.has_selectable_text());
+        assert_eq!(pdf.image_only_page_count(), 1);
+        let plan = plan_pdf_extraction(&pdf);
+        assert_eq!(plan.image_only_pages(), vec![0]);
+        let direct = extract_editable_html(&pdf);
+        assert!(!direct.contains("<img"), "unexpected image wrapper:\n{direct}");
+        assert!(direct.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ocr_pages_parallel_handles_empty_input() {
+        let res = ocr_pages_parallel(&[]).await.unwrap();
+        assert!(res.is_empty());
+    }
+
+    #[tokio::test]
+    async fn abort_on_drop_cancels_spawned_tasks() {
+        let jh = tokio::spawn(std::future::pending::<()>());
+        let guard = AbortOnDrop(vec![jh.abort_handle()]);
+        drop(guard);
+        let err = jh.await.expect_err("task should have been aborted on drop");
+        assert!(err.is_cancelled());
+    }
+
+    #[test]
+    fn tesseract_tsv_parses_headings_paragraphs_and_tables() {
+        let tsv = "\
+level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext
+5\t1\t1\t1\t1\t1\t60\t40\t120\t28\t95\tINVOICE
+5\t1\t1\t1\t2\t1\t60\t90\t50\t14\t96\tBilled
+5\t1\t1\t1\t2\t2\t116\t90\t45\t14\t94\tToday
+5\t1\t2\t1\t1\t1\t60\t140\t60\t14\t95\tItem
+5\t1\t2\t1\t1\t2\t320\t140\t60\t14\t95\tPrice
+5\t1\t2\t1\t2\t1\t60\t164\t80\t14\t94\tScanner
+5\t1\t2\t1\t2\t2\t320\t164\t65\t14\t92\t$99.00";
+
+        let section = tesseract_tsv_to_section_html(tsv).expect("section expected");
+        assert!(section.contains("<h1>INVOICE</h1>"), "section:\n{section}");
+        assert!(section.contains("<p>Billed Today</p>"), "section:\n{section}");
+        assert!(section.contains("<table>"), "section:\n{section}");
+        assert!(section.contains("<th>Item</th><th>Price</th>"), "section:\n{section}");
+        assert!(section.contains("<td>Scanner</td><td>$99.00</td>"), "section:\n{section}");
+    }
+
+    #[test]
+    fn combine_html_pages_merges_styles_and_bodies() {
+        let p1 = "<!DOCTYPE html><html><head><style>.a{color:#111;}</style></head><body><h1>Page One</h1></body></html>".to_string();
+        let p2 = "<!DOCTYPE html><html><head><style>.b{color:#222;}</style></head><body><p>Page Two</p></body></html>".to_string();
+        let combined = combine_html_pages(&[p1, p2]);
+        assert!(combined.contains(".a{color:#111;}"));
+        assert!(combined.contains(".b{color:#222;}"));
+        assert!(combined.contains("<h1>Page One</h1>"));
+        assert!(combined.contains("<p>Page Two</p>"));
+        assert!(combined.contains("<hr class=\"page-sep\">"));
     }
 
     #[tokio::test]

@@ -81,6 +81,14 @@ pub fn detect_chromium() -> String {
     "chromium".into()
 }
 
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Convert a local filesystem path into a cross-platform `file://` URL.
 fn path_to_file_url(path: &Path) -> String {
     let raw = path.to_string_lossy();
@@ -102,29 +110,39 @@ pub async fn html_to_pdf(chromium: &str, html: &str, output: &Path) -> Result<()
 
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let work_dir = std::env::temp_dir().join(format!("unscanme-{}-{stamp}", std::process::id()));
+    let _guard = TempDirGuard(work_dir.clone());
     tokio::fs::create_dir_all(&work_dir).await?;
     let html_path = work_dir.join("document.html");
     tokio::fs::write(&html_path, html).await?;
 
     let file_url = path_to_file_url(&html_path);
 
-    let result = tokio::process::Command::new(&browser)
-        .arg("--headless")
-        .arg("--disable-gpu")
-        .arg("--no-first-run")
-        .arg("--no-pdf-header-footer")
-        // Separate profile so it never collides with a running browser instance.
-        .arg(format!("--user-data-dir={}", work_dir.join("profile").display()))
-        .arg(format!("--print-to-pdf={}", output.display()))
-        .arg(&file_url)
-        .output()
-        .await
-        .with_context(|| {
-            format!("failed to start `{browser}`. Check the Chromium / Chrome path in Settings")
-        });
-
-    let _ = tokio::fs::remove_dir_all(&work_dir).await;
-    let out = result?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        tokio::process::Command::new(&browser)
+            .kill_on_drop(true)
+            .arg("--headless")
+            .arg("--disable-gpu")
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("--disable-extensions")
+            .arg("--disable-background-networking")
+            .arg("--disable-sync")
+            .arg("--disable-default-apps")
+            .arg("--disable-component-update")
+            .arg("--metrics-recording-only")
+            .arg("--no-pdf-header-footer")
+            // Separate profile so it never collides with a running browser instance.
+            .arg(format!("--user-data-dir={}", work_dir.join("profile").display()))
+            .arg(format!("--print-to-pdf={}", output.display()))
+            .arg(&file_url)
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Chromium PDF export timed out after 90s"))?
+    .with_context(|| {
+        format!("failed to start `{browser}`. Check the Chromium / Chrome path in Settings")
+    })?;
 
     if !out.status.success() || !output.exists() {
         bail!(
@@ -134,4 +152,26 @@ pub async fn html_to_pdf(chromium: &str, html: &str, output: &Path) -> Result<()
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_dir_guard_cleans_up_on_drop() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("unscanme_guard_{}_{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("probe.txt"), b"ok").unwrap();
+        assert!(dir.exists());
+        {
+            let _guard = TempDirGuard(dir.clone());
+        }
+        assert!(!dir.exists());
+    }
 }
