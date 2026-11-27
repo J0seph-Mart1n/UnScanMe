@@ -73,6 +73,48 @@
     display: flex;
     justify-content: flex-end;
     align-items: center;
+    gap: 8px;
+}
+
+.exec-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border-radius: var(--radius-md);
+    background: var(--bg-panel);
+    border: 1px solid var(--border-subtle);
+}
+
+.exec-switch-btn {
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color .12s ease, color .12s ease, border-color .12s ease;
+    white-space: nowrap;
+}
+
+.exec-switch-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.exec-switch-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+}
+
+.exec-switch-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .nav-model-pill {

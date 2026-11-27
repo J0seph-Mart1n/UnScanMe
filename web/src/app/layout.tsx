@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "UnScanMe — Unscan Faster, Edit with Confidence",
   description:
-    "Turn document photos, crooked scans, and locked PDFs into clean editable documents and searchable vector PDFs — 100% locally on Windows, macOS, and Linux.",
+    "Turn document photos, crooked scans, and locked PDFs into editable HTML, interactive tables, and searchable vector PDFs — 100% offline with Ollama or faster with your own Gemini, OpenAI, or Claude API keys.",
 };
 
 export default function RootLayout({

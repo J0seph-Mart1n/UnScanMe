@@ -11,6 +11,7 @@ conflicts=('i-hate-scans' 'img-to-pdf' 'docforge')
 depends=('webkit2gtk-4.1' 'gtk3' 'xdotool' 'xdg-desktop-portal')
 optdepends=(
   'ollama: local vision AI inference'
+  'tesseract: fast offline OCR for scanned PDFs'
   'poppler: PDF-to-Editable-HTML BBox extraction and page rasterization'
   'chromium: headless vector PDF printing'
   'wl-clipboard: Wayland clipboard Ctrl+V image paste'

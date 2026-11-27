@@ -105,13 +105,122 @@ Follow these rules strictly:
 6. **Output Format**: Return ONLY the raw HTML5 code starting with `<!DOCTYPE html>` and ending
    with `</html>`. Do NOT wrap the output in markdown code fences or add any explanatory text."#;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProvider {
+    #[default]
+    Ollama,
+    Gemini,
+    OpenAi,
+    Anthropic,
+    OpenAiCompatible,
+}
+
+impl std::fmt::Display for AiProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl AiProvider {
+    pub const CLOUD: [Self; 4] = [
+        Self::Gemini,
+        Self::OpenAi,
+        Self::Anthropic,
+        Self::OpenAiCompatible,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ollama => "Ollama (Local)",
+            Self::Gemini => "Google Gemini",
+            Self::OpenAi => "OpenAI",
+            Self::Anthropic => "Anthropic Claude",
+            Self::OpenAiCompatible => "OpenAI-Compatible",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Ollama => "Local",
+            Self::Gemini => "Gemini",
+            Self::OpenAi => "OpenAI",
+            Self::Anthropic => "Claude",
+            Self::OpenAiCompatible => "Custom API",
+        }
+    }
+
+    pub fn is_cloud(self) -> bool {
+        !matches!(self, Self::Ollama)
+    }
+
+    pub fn requires_api_key(self) -> bool {
+        matches!(self, Self::Gemini | Self::OpenAi | Self::Anthropic)
+    }
+
+    pub fn env_var_name(self) -> Option<&'static str> {
+        match self {
+            Self::Gemini => Some("GEMINI_API_KEY"),
+            Self::OpenAi => Some("OPENAI_API_KEY"),
+            Self::Anthropic => Some("ANTHROPIC_API_KEY"),
+            Self::Ollama | Self::OpenAiCompatible => None,
+        }
+    }
+
+    pub fn suggested_models(self) -> &'static [&'static str] {
+        match self {
+            Self::Ollama => &[
+                "qwen2.5vl:3b",
+                "qwen2.5vl:7b",
+                "llama3.2-vision:11b",
+                "gemma3:4b",
+            ],
+            Self::Gemini => &["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+            Self::OpenAi => &["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+            Self::Anthropic => &[
+                "claude-sonnet-4-20250514",
+                "claude-3-7-sonnet-latest",
+                "claude-3-5-haiku-latest",
+            ],
+            Self::OpenAiCompatible => &[
+                "google/gemini-2.5-flash",
+                "openai/gpt-4o-mini",
+                "anthropic/claude-sonnet-4",
+                "meta-llama/llama-4-scout-17b-16e-instruct",
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Active AI execution backend (local Ollama or a cloud API provider).
+    pub provider: AiProvider,
+    /// Last-used cloud provider restored when toggling between Local Ollama and Cloud API mode.
+    pub last_cloud_provider: AiProvider,
     /// Base URL of the local Ollama server.
     pub ollama_url: String,
     /// Ollama model tag of a vision-capable model, e.g. `qwen2.5vl:3b`.
     pub model: String,
+    /// Google Gemini API key (or leave empty to read `GEMINI_API_KEY`).
+    pub gemini_api_key: String,
+    /// Google Gemini model ID.
+    pub gemini_model: String,
+    /// OpenAI API key (or leave empty to read `OPENAI_API_KEY`).
+    pub openai_api_key: String,
+    /// OpenAI vision model ID.
+    pub openai_model: String,
+    /// Anthropic API key (or leave empty to read `ANTHROPIC_API_KEY`).
+    pub anthropic_api_key: String,
+    /// Anthropic Claude model ID.
+    pub anthropic_model: String,
+    /// Base URL for an OpenAI-compatible provider (OpenRouter, Groq, Together, etc.).
+    pub custom_api_url: String,
+    /// Optional Bearer API key for the OpenAI-compatible provider.
+    pub custom_api_key: String,
+    /// Model ID for the OpenAI-compatible provider.
+    pub custom_model: String,
     /// Instruction prompt sent with the image.
     pub prompt: String,
     /// Model context window (tokens). Larger = longer documents, more VRAM.
@@ -127,8 +236,19 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            provider: AiProvider::Ollama,
+            last_cloud_provider: AiProvider::Ollama,
             ollama_url: "http://localhost:11434".into(),
             model: "qwen2.5vl:3b".into(),
+            gemini_api_key: String::new(),
+            gemini_model: "gemini-2.5-flash".into(),
+            openai_api_key: String::new(),
+            openai_model: "gpt-4o-mini".into(),
+            anthropic_api_key: String::new(),
+            anthropic_model: "claude-sonnet-4-20250514".into(),
+            custom_api_url: "https://openrouter.ai/api/v1".into(),
+            custom_api_key: String::new(),
+            custom_model: "google/gemini-2.5-flash".into(),
             prompt: DEFAULT_PROMPT.into(),
             num_ctx: 8192,
             temperature: 0.1,
@@ -153,6 +273,123 @@ fn legacy_settings_paths() -> Vec<PathBuf> {
 }
 
 impl Settings {
+    /// Model name/ID currently selected for the active provider.
+    pub fn active_model(&self) -> &str {
+        match self.provider {
+            AiProvider::Ollama => &self.model,
+            AiProvider::Gemini => &self.gemini_model,
+            AiProvider::OpenAi => &self.openai_model,
+            AiProvider::Anthropic => &self.anthropic_model,
+            AiProvider::OpenAiCompatible => &self.custom_model,
+        }
+    }
+
+    pub fn active_model_mut(&mut self) -> &mut String {
+        match self.provider {
+            AiProvider::Ollama => &mut self.model,
+            AiProvider::Gemini => &mut self.gemini_model,
+            AiProvider::OpenAi => &mut self.openai_model,
+            AiProvider::Anthropic => &mut self.anthropic_model,
+            AiProvider::OpenAiCompatible => &mut self.custom_model,
+        }
+    }
+
+    pub fn active_api_key_stored(&self) -> &str {
+        match self.provider {
+            AiProvider::Ollama => "",
+            AiProvider::Gemini => &self.gemini_api_key,
+            AiProvider::OpenAi => &self.openai_api_key,
+            AiProvider::Anthropic => &self.anthropic_api_key,
+            AiProvider::OpenAiCompatible => &self.custom_api_key,
+        }
+    }
+
+    pub fn active_api_key_mut(&mut self) -> Option<&mut String> {
+        match self.provider {
+            AiProvider::Ollama => None,
+            AiProvider::Gemini => Some(&mut self.gemini_api_key),
+            AiProvider::OpenAi => Some(&mut self.openai_api_key),
+            AiProvider::Anthropic => Some(&mut self.anthropic_api_key),
+            AiProvider::OpenAiCompatible => Some(&mut self.custom_api_key),
+        }
+    }
+
+    fn api_key_for(&self, provider: AiProvider) -> String {
+        let stored = match provider {
+            AiProvider::Ollama => "",
+            AiProvider::Gemini => &self.gemini_api_key,
+            AiProvider::OpenAi => &self.openai_api_key,
+            AiProvider::Anthropic => &self.anthropic_api_key,
+            AiProvider::OpenAiCompatible => &self.custom_api_key,
+        }
+        .trim();
+        if !stored.is_empty() {
+            return stored.to_string();
+        }
+        if let Some(env_name) = provider.env_var_name() {
+            if let Ok(val) = std::env::var(env_name) {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+        String::new()
+    }
+
+    /// Resolve the active API key and whether it came from an environment variable.
+    pub fn effective_api_key(&self) -> (String, bool) {
+        let stored = self.active_api_key_stored().trim();
+        if !stored.is_empty() {
+            return (stored.to_string(), false);
+        }
+        if let Some(env_name) = self.provider.env_var_name() {
+            if let Ok(val) = std::env::var(env_name) {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    return (trimmed.to_string(), true);
+                }
+            }
+        }
+        (String::new(), false)
+    }
+
+    /// Cloud provider to activate when switching to API-key execution mode.
+    pub fn preferred_cloud_provider(&self) -> AiProvider {
+        if self.provider.is_cloud() {
+            return self.provider;
+        }
+        if self.last_cloud_provider.is_cloud() {
+            return self.last_cloud_provider;
+        }
+        AiProvider::CLOUD
+            .iter()
+            .copied()
+            .find(|&p| !self.api_key_for(p).is_empty())
+            .unwrap_or(AiProvider::Gemini)
+    }
+
+    /// Select an AI provider while remembering the latest cloud provider.
+    pub fn set_provider(&mut self, provider: AiProvider) {
+        if self.provider.is_cloud() && !provider.is_cloud() {
+            self.last_cloud_provider = self.provider;
+        }
+        self.provider = provider;
+        if provider.is_cloud() {
+            self.last_cloud_provider = provider;
+        }
+    }
+
+    /// Toggle between Local Ollama (`use_cloud_api = false`) and Cloud API execution (`true`).
+    pub fn switch_execution_mode(&mut self, use_cloud_api: bool) {
+        if use_cloud_api {
+            let target = self.preferred_cloud_provider();
+            self.set_provider(target);
+        } else {
+            self.set_provider(AiProvider::Ollama);
+        }
+    }
+
     /// Upgrade an unmodified legacy default prompt (or empty prompt) to the current `DEFAULT_PROMPT`.
     pub fn migrate_legacy_prompt(&mut self) {
         let trimmed = self.prompt.trim();
@@ -185,6 +422,11 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(path)
     }
 }
@@ -215,5 +457,55 @@ mod tests {
         let mut custom = Settings { prompt: custom_text.into(), ..Default::default() };
         custom.migrate_legacy_prompt();
         assert_eq!(custom.prompt, custom_text);
+    }
+
+    #[test]
+    fn legacy_json_deserializes_with_ollama_default_and_cloud_defaults() {
+        let legacy_json = r#"{"ollama_url":"http://localhost:11434","model":"qwen2.5vl:7b","num_ctx":4096}"#;
+        let loaded: Settings = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(loaded.provider, AiProvider::Ollama);
+        assert_eq!(loaded.active_model(), "qwen2.5vl:7b");
+        assert_eq!(loaded.gemini_model, "gemini-2.5-flash");
+        assert_eq!(loaded.openai_model, "gpt-4o-mini");
+        assert_eq!(loaded.anthropic_model, "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn active_model_and_key_switch_by_provider() {
+        let mut s = Settings {
+            provider: AiProvider::Gemini,
+            gemini_api_key: "  gm-test-123  ".into(),
+            ..Default::default()
+        };
+        *s.active_model_mut() = "gemini-2.5-pro".into();
+        assert_eq!(s.active_model(), "gemini-2.5-pro");
+        assert_eq!(s.effective_api_key(), ("gm-test-123".to_string(), false));
+
+        s.provider = AiProvider::OpenAi;
+        s.openai_api_key = "sk-test".into();
+        assert_eq!(s.active_model(), "gpt-4o-mini");
+        assert_eq!(s.effective_api_key(), ("sk-test".to_string(), false));
+    }
+
+    #[test]
+    fn switch_execution_mode_remembers_last_cloud_provider() {
+        let mut s = Settings {
+            openai_api_key: "sk-configured".into(),
+            ..Default::default()
+        };
+        assert_eq!(s.provider, AiProvider::Ollama);
+        // Should pick OpenAI since only OpenAI has a configured key.
+        s.switch_execution_mode(true);
+        assert_eq!(s.provider, AiProvider::OpenAi);
+
+        // Explicit cloud switch updates remembered cloud provider.
+        s.set_provider(AiProvider::Anthropic);
+        assert_eq!(s.last_cloud_provider, AiProvider::Anthropic);
+
+        // Toggle back to local Ollama and then back to API key mode.
+        s.switch_execution_mode(false);
+        assert_eq!(s.provider, AiProvider::Ollama);
+        s.switch_execution_mode(true);
+        assert_eq!(s.provider, AiProvider::Anthropic);
     }
 }

@@ -1,9 +1,11 @@
-//! Image -> HTML conversion using a vision model served by a local Ollama instance.
+//! AI vision & text -> HTML conversion via local Ollama or fast cloud API providers
+//! (Google Gemini, OpenAI, Anthropic Claude, and OpenAI-Compatible endpoints).
 
-use crate::settings::Settings;
+use crate::settings::{AiProvider, Settings};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::Cursor;
 use std::time::Duration;
 
@@ -184,6 +186,268 @@ pub fn detect_repetition_loop(s: &str) -> Option<usize> {
     None
 }
 
+/// Normalize a user-supplied OpenAI-compatible base URL (trimming trailing slashes and
+/// accidentally pasted `/chat/completions` or `/models` suffixes).
+pub fn normalize_openai_base_url(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let stripped = trimmed
+        .strip_suffix("/chat/completions")
+        .or_else(|| trimmed.strip_suffix("/models"))
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    if stripped.is_empty() {
+        "https://openrouter.ai/api/v1".to_string()
+    } else {
+        stripped.to_string()
+    }
+}
+
+fn normalize_gemini_model(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed.strip_prefix("models/").unwrap_or(trimmed)
+}
+
+fn extract_api_error(body: &str) -> String {
+    if let Ok(val) = serde_json::from_str::<Value>(body) {
+        if let Some(msg) = val
+            .pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .or_else(|| val.get("message").and_then(|v| v.as_str()))
+        {
+            return msg.trim().to_string();
+        }
+    }
+    body.trim().chars().take(280).collect()
+}
+
+pub fn parse_gemini_sse_data(data: &str) -> Result<(String, usize)> {
+    let val: Value = serde_json::from_str(data).context("invalid Gemini stream event")?;
+    if let Some(err_msg) = val.pointer("/error/message").and_then(|v| v.as_str()) {
+        bail!("Gemini API error: {err_msg}");
+    }
+    let mut text = String::new();
+    let mut thinking_chars = 0usize;
+    if let Some(parts) = val
+        .pointer("/candidates/0/content/parts")
+        .and_then(|v| v.as_array())
+    {
+        for part in parts {
+            let Some(t) = part.get("text").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false) {
+                thinking_chars += t.len();
+            } else {
+                text.push_str(t);
+            }
+        }
+    }
+    Ok((text, thinking_chars))
+}
+
+pub fn parse_openai_sse_data(data: &str) -> Result<Option<(String, usize)>> {
+    if data == "[DONE]" {
+        return Ok(None);
+    }
+    let val: Value = serde_json::from_str(data).context("invalid OpenAI stream event")?;
+    if let Some(err_msg) = val.pointer("/error/message").and_then(|v| v.as_str()) {
+        bail!("API error: {err_msg}");
+    }
+    let delta = val.pointer("/choices/0/delta");
+    let text = delta
+        .and_then(|d| d.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let thinking_chars = delta
+        .and_then(|d| {
+            d.get("reasoning_content")
+                .or_else(|| d.get("reasoning"))
+                .and_then(|v| v.as_str())
+        })
+        .map(str::len)
+        .unwrap_or(0);
+    Ok(Some((text, thinking_chars)))
+}
+
+pub fn parse_anthropic_sse_data(data: &str) -> Result<Option<(String, usize)>> {
+    let val: Value = serde_json::from_str(data).context("invalid Anthropic stream event")?;
+    let evt_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match evt_type {
+        "message_stop" => Ok(None),
+        "error" => {
+            let msg = val
+                .pointer("/error/message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown streaming error");
+            bail!("Anthropic API error: {msg}");
+        }
+        "content_block_delta" => {
+            let delta = val.get("delta");
+            let delta_type = delta
+                .and_then(|d| d.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match delta_type {
+                "text_delta" => {
+                    let text = delta
+                        .and_then(|d| d.get("text"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Ok(Some((text, 0)))
+                }
+                "thinking_delta" => {
+                    let len = delta
+                        .and_then(|d| d.get("thinking"))
+                        .and_then(|v| v.as_str())
+                        .map(str::len)
+                        .unwrap_or(0);
+                    Ok(Some((String::new(), len)))
+                }
+                _ => Ok(Some((String::new(), 0))),
+            }
+        }
+        _ => Ok(Some((String::new(), 0))),
+    }
+}
+
+fn build_provider_stream_request(
+    http: &reqwest::Client,
+    settings: &Settings,
+    prompt: &str,
+    images: &[String],
+) -> Result<(reqwest::RequestBuilder, String)> {
+    let model = settings.active_model().trim();
+    if model.is_empty() {
+        bail!("Model name cannot be empty. Set a model in Settings.");
+    }
+    let (api_key, _) = settings.effective_api_key();
+    if settings.provider.requires_api_key() && api_key.is_empty() {
+        let hint = settings
+            .provider
+            .env_var_name()
+            .map(|v| format!(" or set `{v}`"))
+            .unwrap_or_default();
+        bail!(
+            "{} API key is not configured. Add it in Settings{hint}.",
+            settings.provider.label()
+        );
+    }
+
+    match settings.provider {
+        AiProvider::Ollama => {
+            let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
+            let request = ChatRequest {
+                model,
+                messages: vec![ChatMessage {
+                    role: "user",
+                    content: prompt,
+                    images: images.to_vec(),
+                }],
+                stream: true,
+                options: ChatOptions {
+                    temperature: settings.temperature,
+                    num_ctx: settings.num_ctx,
+                },
+            };
+            Ok((http.post(&url).json(&request), url))
+        }
+        AiProvider::Gemini => {
+            let g_model = normalize_gemini_model(model);
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{g_model}:streamGenerateContent?alt=sse"
+            );
+            let mut parts = vec![serde_json::json!({ "text": prompt })];
+            for b64 in images {
+                parts.push(serde_json::json!({
+                    "inline_data": {
+                        "mime_type": "image/png",
+                        "data": b64,
+                    }
+                }));
+            }
+            let payload = serde_json::json!({
+                "contents": [{ "role": "user", "parts": parts }],
+                "generationConfig": { "temperature": settings.temperature },
+            });
+            let req = http
+                .post(&url)
+                .header("x-goog-api-key", api_key)
+                .json(&payload);
+            Ok((req, "Google Gemini API".to_string()))
+        }
+        AiProvider::OpenAi | AiProvider::OpenAiCompatible => {
+            let base = if settings.provider == AiProvider::OpenAi {
+                "https://api.openai.com/v1".to_string()
+            } else {
+                let raw = settings.custom_api_url.trim();
+                if raw.is_empty() {
+                    bail!("OpenAI-compatible Base URL cannot be empty. Set it in Settings.");
+                }
+                normalize_openai_base_url(raw)
+            };
+            let url = format!("{base}/chat/completions");
+            let content = if images.is_empty() {
+                Value::String(prompt.to_string())
+            } else {
+                let mut items = vec![serde_json::json!({ "type": "text", "text": prompt })];
+                for b64 in images {
+                    items.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": format!("data:image/png;base64,{b64}") }
+                    }));
+                }
+                Value::Array(items)
+            };
+            let payload = serde_json::json!({
+                "model": model,
+                "stream": true,
+                "temperature": settings.temperature,
+                "messages": [{ "role": "user", "content": content }],
+            });
+            let mut req = http.post(&url);
+            if !api_key.is_empty() {
+                req = req.bearer_auth(api_key);
+            }
+            Ok((req.json(&payload), url))
+        }
+        AiProvider::Anthropic => {
+            let url = "https://api.anthropic.com/v1/messages".to_string();
+            let content = if images.is_empty() {
+                Value::String(prompt.to_string())
+            } else {
+                let mut blocks = Vec::with_capacity(images.len() + 1);
+                for b64 in images {
+                    blocks.push(serde_json::json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": b64,
+                        }
+                    }));
+                }
+                blocks.push(serde_json::json!({ "type": "text", "text": prompt }));
+                Value::Array(blocks)
+            };
+            let payload = serde_json::json!({
+                "model": model,
+                "max_tokens": 8192,
+                "temperature": settings.temperature,
+                "stream": true,
+                "messages": [{ "role": "user", "content": content }],
+            });
+            let req = http
+                .post(&url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&payload);
+            Ok((req, "Anthropic API".to_string()))
+        }
+    }
+}
+
 async fn send_chat_streaming<F>(
     settings: &Settings,
     prompt: &str,
@@ -193,33 +457,36 @@ async fn send_chat_streaming<F>(
 where
     F: FnMut(ChatProgress),
 {
-    let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
-    let request = ChatRequest {
-        model: &settings.model,
-        messages: vec![ChatMessage { role: "user", content: prompt, images }],
-        stream: true,
-        options: ChatOptions {
-            temperature: settings.temperature,
-            num_ctx: settings.num_ctx,
-        },
-    };
-
     let http = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(12))
         .build()?;
+
+    let model_name = settings.active_model().trim().to_string();
+    let (req_builder, endpoint_desc) =
+        build_provider_stream_request(&http, settings, prompt, &images)?;
 
     let started = tokio::time::Instant::now();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let initial_timeout = if settings.provider.is_cloud() {
+        Duration::from_secs(120)
+    } else {
+        Duration::from_secs(180)
+    };
+
     let mut response = {
-        let send_fut = std::pin::pin!(http.post(&url).json(&request).send());
+        let send_fut = std::pin::pin!(req_builder.send());
         let mut send_fut = send_fut;
         loop {
             tokio::select! {
                 res = &mut send_fut => {
                     break res.with_context(|| {
-                        format!("could not reach Ollama at {url}. Is `ollama serve` running?")
+                        if settings.provider == AiProvider::Ollama {
+                            format!("could not reach Ollama at {endpoint_desc}. Is `ollama serve` running?")
+                        } else {
+                            format!("could not reach {} ({endpoint_desc}). Check your network connection.", settings.provider.label())
+                        }
                     })?;
                 }
                 _ = ticker.tick() => {
@@ -230,10 +497,15 @@ where
                         thinking_chars: 0,
                         elapsed_secs: elapsed.as_secs(),
                     });
-                    if elapsed >= Duration::from_secs(180) {
+                    if elapsed >= initial_timeout {
+                        let extra_hint = if settings.provider == AiProvider::Ollama {
+                            " Try lowering Max image px, configuring a cloud API key in Settings, or checking `ollama ps`."
+                        } else {
+                            " Check your internet connection or API quota."
+                        };
                         bail!(
-                            "Timed out after 180s waiting for `{}` to start responding. Try lowering Max image px in Settings, using Fast Convert (OCR), or checking `ollama ps`.",
-                            settings.model
+                            "Timed out after {}s waiting for `{model_name}` to start responding.{extra_hint}",
+                            initial_timeout.as_secs()
                         );
                     }
                 }
@@ -244,7 +516,8 @@ where
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        bail!("Ollama returned {status}: {body}");
+        let msg = extract_api_error(&body);
+        bail!("{} returned {status}: {msg}", settings.provider.label());
     }
 
     let mut last_activity = tokio::time::Instant::now();
@@ -253,6 +526,7 @@ where
     let mut thinking_chars = 0usize;
     let mut buffer = String::new();
     let mut loop_trimmed = false;
+    let is_cloud = settings.provider.is_cloud();
 
     'stream: loop {
         tokio::select! {
@@ -267,16 +541,55 @@ where
                             if line.is_empty() {
                                 continue;
                             }
-                            let Ok(event) = serde_json::from_str::<ChatStreamChunk>(&line) else {
-                                continue;
+                            let stream_done = if !is_cloud {
+                                let Ok(event) = serde_json::from_str::<ChatStreamChunk>(&line) else {
+                                    continue;
+                                };
+                                if let Some(err) = event.error {
+                                    bail!("Ollama error: {err}");
+                                }
+                                if let Some(msg) = event.message {
+                                    thinking_chars += msg.thinking.len();
+                                    accumulated.push_str(&msg.content);
+                                }
+                                event.done
+                            } else {
+                                let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                                    continue;
+                                };
+                                if data.is_empty() {
+                                    continue;
+                                }
+                                match settings.provider {
+                                    AiProvider::Gemini => {
+                                        let (text, t_len) = parse_gemini_sse_data(data)?;
+                                        thinking_chars += t_len;
+                                        accumulated.push_str(&text);
+                                        false
+                                    }
+                                    AiProvider::OpenAi | AiProvider::OpenAiCompatible => {
+                                        match parse_openai_sse_data(data)? {
+                                            Some((text, t_len)) => {
+                                                thinking_chars += t_len;
+                                                accumulated.push_str(&text);
+                                                false
+                                            }
+                                            None => true,
+                                        }
+                                    }
+                                    AiProvider::Anthropic => {
+                                        match parse_anthropic_sse_data(data)? {
+                                            Some((text, t_len)) => {
+                                                thinking_chars += t_len;
+                                                accumulated.push_str(&text);
+                                                false
+                                            }
+                                            None => true,
+                                        }
+                                    }
+                                    AiProvider::Ollama => unreachable!(),
+                                }
                             };
-                            if let Some(err) = event.error {
-                                bail!("Ollama error: {err}");
-                            }
-                            if let Some(msg) = event.message {
-                                thinking_chars += msg.thinking.len();
-                                accumulated.push_str(&msg.content);
-                            }
                             if last_emit.elapsed() >= Duration::from_millis(150) {
                                 let phase = if !accumulated.is_empty() {
                                     ChatPhase::Generating
@@ -301,7 +614,7 @@ where
                                 loop_trimmed = true;
                                 break 'stream;
                             }
-                            if event.done {
+                            if stream_done {
                                 break 'stream;
                             }
                         }
@@ -309,26 +622,57 @@ where
                     Ok(None) => {
                         let trailing = buffer.trim();
                         if !trailing.is_empty() {
-                            if let Ok(event) = serde_json::from_str::<ChatStreamChunk>(trailing) {
-                                if let Some(err) = event.error {
-                                    bail!("Ollama error: {err}");
+                            if !is_cloud {
+                                if let Ok(event) = serde_json::from_str::<ChatStreamChunk>(trailing) {
+                                    if let Some(err) = event.error {
+                                        bail!("Ollama error: {err}");
+                                    }
+                                    if let Some(msg) = event.message {
+                                        thinking_chars += msg.thinking.len();
+                                        accumulated.push_str(&msg.content);
+                                    }
                                 }
-                                if let Some(msg) = event.message {
-                                    thinking_chars += msg.thinking.len();
-                                    accumulated.push_str(&msg.content);
+                            } else if let Some(data) = trailing.strip_prefix("data:").map(str::trim) {
+                                if !data.is_empty() {
+                                    match settings.provider {
+                                        AiProvider::Gemini => {
+                                            if let Ok((text, t_len)) = parse_gemini_sse_data(data) {
+                                                thinking_chars += t_len;
+                                                accumulated.push_str(&text);
+                                            }
+                                        }
+                                        AiProvider::OpenAi | AiProvider::OpenAiCompatible => {
+                                            if let Ok(Some((text, t_len))) = parse_openai_sse_data(data) {
+                                                thinking_chars += t_len;
+                                                accumulated.push_str(&text);
+                                            }
+                                        }
+                                        AiProvider::Anthropic => {
+                                            if let Ok(Some((text, t_len))) = parse_anthropic_sse_data(data) {
+                                                thinking_chars += t_len;
+                                                accumulated.push_str(&text);
+                                            }
+                                        }
+                                        AiProvider::Ollama => {}
+                                    }
                                 }
                             }
                         }
                         break 'stream;
                     }
                     Err(e) => {
-                        return Err(e).context("stream interrupted while reading response from Ollama");
+                        return Err(e).with_context(|| {
+                            format!(
+                                "stream interrupted while reading response from {}",
+                                settings.provider.label()
+                            )
+                        });
                     }
                 }
             }
             _ = ticker.tick() => {
                 let idle_limit = if accumulated.is_empty() && thinking_chars == 0 {
-                    Duration::from_secs(180)
+                    initial_timeout
                 } else {
                     Duration::from_secs(60)
                 };
@@ -337,8 +681,7 @@ where
                         break 'stream;
                     }
                     bail!(
-                        "Stream stalled waiting for `{}` (no tokens for {}s). Try lowering Max image px in Settings or retrying.",
-                        settings.model,
+                        "Stream stalled waiting for `{model_name}` (no tokens for {}s).",
                         idle_limit.as_secs()
                     );
                 }
@@ -362,8 +705,7 @@ where
     if accumulated.trim().is_empty() {
         if thinking_chars > 0 {
             bail!(
-                "Model `{}` emitted only reasoning tokens and no HTML output. Switch to a direct vision/HTML model such as `qwen2.5vl:3b` in Settings.",
-                settings.model
+                "Model `{model_name}` emitted only reasoning tokens and no HTML output. Switch to a direct vision/HTML model in Settings."
             );
         }
         return Err(anyhow!("the model returned an empty response"));
@@ -374,8 +716,7 @@ where
         && (html.trim().len() < 60 || !html.to_ascii_lowercase().contains("<body"))
     {
         bail!(
-            "Model `{}` got stuck in a repetition loop. Try lowering Max image px in Settings or retrying.",
-            settings.model
+            "Model `{model_name}` got stuck in a repetition loop. Try lowering Max image px in Settings or retrying."
         );
     }
     if html.trim().is_empty() {
@@ -520,6 +861,138 @@ pub fn model_in_list(installed: &[String], model: &str) -> bool {
 pub async fn is_model_installed(base_url: &str, model: &str) -> Result<bool> {
     let models = list_models(base_url).await?;
     Ok(model_in_list(&models, model))
+}
+
+/// Test connectivity & authentication for the currently configured provider and list available models.
+pub async fn test_provider_connection(settings: &Settings) -> Result<Vec<String>> {
+    if settings.provider == AiProvider::Ollama {
+        return list_models(&settings.ollama_url).await;
+    }
+
+    let (api_key, _) = settings.effective_api_key();
+    if settings.provider.requires_api_key() && api_key.is_empty() {
+        let env_hint = settings
+            .provider
+            .env_var_name()
+            .map(|v| format!(" or `{v}`"))
+            .unwrap_or_default();
+        bail!(
+            "Enter your {} API key{env_hint} before testing.",
+            settings.provider.label()
+        );
+    }
+
+    let http = client(Duration::from_secs(12))?;
+    match settings.provider {
+        AiProvider::Ollama => unreachable!(),
+        AiProvider::Gemini => {
+            let resp = http
+                .get("https://generativelanguage.googleapis.com/v1beta/models")
+                .header("x-goog-api-key", api_key)
+                .send()
+                .await
+                .context("could not reach Google Gemini API")?;
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                bail!("Gemini API returned {status}: {}", extract_api_error(&body));
+            }
+            let json: Value =
+                serde_json::from_str(&body).context("invalid response from Gemini API")?;
+            let mut ids: Vec<String> = json
+                .get("models")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|m| {
+                            m.get("supportedGenerationMethods")
+                                .and_then(|v| v.as_array())
+                                .is_some_and(|methods| {
+                                    methods
+                                        .iter()
+                                        .any(|meth| meth.as_str() == Some("generateContent"))
+                                })
+                        })
+                        .filter_map(|m| m.get("name").and_then(|v| v.as_str()))
+                        .map(|s| normalize_gemini_model(s).to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            ids.sort();
+            ids.truncate(24);
+            Ok(ids)
+        }
+        AiProvider::OpenAi | AiProvider::OpenAiCompatible => {
+            let base = if settings.provider == AiProvider::OpenAi {
+                "https://api.openai.com/v1".to_string()
+            } else {
+                let raw = settings.custom_api_url.trim();
+                if raw.is_empty() {
+                    bail!("Enter an API Base URL first.");
+                }
+                normalize_openai_base_url(raw)
+            };
+            let url = format!("{base}/models");
+            let mut req = http.get(&url);
+            if !api_key.is_empty() {
+                req = req.bearer_auth(api_key);
+            }
+            let resp = req
+                .send()
+                .await
+                .with_context(|| format!("could not reach {} API at {url}", settings.provider.label()))?;
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                bail!(
+                    "{} returned {status}: {}",
+                    settings.provider.label(),
+                    extract_api_error(&body)
+                );
+            }
+            let json: Value =
+                serde_json::from_str(&body).context("invalid models response from API")?;
+            let mut ids: Vec<String> = json
+                .get("data")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            ids.sort();
+            ids.truncate(24);
+            Ok(ids)
+        }
+        AiProvider::Anthropic => {
+            let resp = http
+                .get("https://api.anthropic.com/v1/models")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .send()
+                .await
+                .context("could not reach Anthropic API")?;
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                bail!("Anthropic API returned {status}: {}", extract_api_error(&body));
+            }
+            let json: Value =
+                serde_json::from_str(&body).context("invalid response from Anthropic API")?;
+            let mut ids: Vec<String> = json
+                .get("data")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            ids.truncate(24);
+            Ok(ids)
+        }
+    }
 }
 
 /// Download (pull) `model` in Ollama via `POST /api/pull`, streaming progress updates.
@@ -722,5 +1195,54 @@ mod tests {
         let decoded = image::load_from_memory(&prepared).unwrap();
         assert_eq!(decoded.width(), 512);
         assert_eq!(decoded.height(), 256);
+    }
+
+    #[test]
+    fn normalize_openai_base_url_strips_endpoint_suffixes() {
+        assert_eq!(
+            normalize_openai_base_url("https://openrouter.ai/api/v1/chat/completions/"),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            normalize_openai_base_url("https://api.groq.com/openai/v1/models"),
+            "https://api.groq.com/openai/v1"
+        );
+        assert_eq!(normalize_openai_base_url("   "), "https://openrouter.ai/api/v1");
+    }
+
+    #[test]
+    fn parse_gemini_sse_data_splits_text_and_thought() {
+        let json = r#"{"candidates":[{"content":{"parts":[{"text":"reasoning...","thought":true},{"text":"<h1>Hi</h1>"}]}}]}"#;
+        let (text, thinking) = parse_gemini_sse_data(json).unwrap();
+        assert_eq!(text, "<h1>Hi</h1>");
+        assert_eq!(thinking, "reasoning...".len());
+    }
+
+    #[test]
+    fn parse_openai_sse_data_handles_delta_and_done() {
+        let delta = r#"{"choices":[{"delta":{"content":"<table>","reasoning_content":"abc"}}]}"#;
+        assert_eq!(
+            parse_openai_sse_data(delta).unwrap(),
+            Some(("<table>".to_string(), 3))
+        );
+        assert_eq!(parse_openai_sse_data("[DONE]").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_anthropic_sse_data_handles_text_thinking_and_stop() {
+        let text_evt = r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"<p>Ok</p>"}}"#;
+        assert_eq!(
+            parse_anthropic_sse_data(text_evt).unwrap(),
+            Some(("<p>Ok</p>".to_string(), 0))
+        );
+        let think_evt = r#"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"step"}}"#;
+        assert_eq!(
+            parse_anthropic_sse_data(think_evt).unwrap(),
+            Some((String::new(), 4))
+        );
+        assert_eq!(
+            parse_anthropic_sse_data(r#"{"type":"message_stop"}"#).unwrap(),
+            None
+        );
     }
 }

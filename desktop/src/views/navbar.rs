@@ -1,12 +1,31 @@
-use crate::{settings::Settings, Route};
+use crate::{
+    settings::Settings,
+    views::{ConvertState, Status},
+    Route,
+};
 use dioxus::prelude::*;
 
 const NAVBAR_CSS: Asset = asset!("/assets/styling/navbar.css");
 
 #[component]
 pub fn Navbar() -> Element {
-    let settings = use_context::<Signal<Settings>>();
-    let model = settings.read().model.clone();
+    let mut settings = use_context::<Signal<Settings>>();
+    let state = use_context::<ConvertState>();
+    let busy = matches!((state.status)(), Status::Busy(_) | Status::Downloading(_));
+    let provider = settings.read().provider;
+    let is_cloud = provider.is_cloud();
+    let target_cloud = settings.read().preferred_cloud_provider();
+    let model = settings.read().active_model().to_string();
+    let badge_label = if is_cloud {
+        provider.short_label().to_uppercase()
+    } else {
+        "LOCAL AI".to_string()
+    };
+    let pill_label = if is_cloud {
+        format!("{} · {}", provider.short_label(), model)
+    } else {
+        model
+    };
 
     rsx! {
         document::Link { rel: "stylesheet", href: NAVBAR_CSS }
@@ -29,7 +48,7 @@ pub fn Navbar() -> Element {
                     }
                 }
                 span { "UnScanMe" }
-                span { class: "nav-badge", "LOCAL AI" }
+                span { class: "nav-badge", "{badge_label}" }
             }
 
             div { class: "nav-tabs",
@@ -38,9 +57,37 @@ pub fn Navbar() -> Element {
             }
 
             div { class: "nav-status",
-                span { class: "nav-model-pill", title: "Active Ollama model",
+                div { class: "exec-switch", role: "group", aria_label: "AI execution mode",
+                    button {
+                        class: if !is_cloud { "exec-switch-btn active" } else { "exec-switch-btn" },
+                        aria_pressed: "{!is_cloud}",
+                        disabled: busy,
+                        title: "Run locally using Ollama",
+                        onclick: move |_| {
+                            settings.write().switch_execution_mode(false);
+                            let _ = settings.read().save();
+                        },
+                        "Ollama"
+                    }
+                    button {
+                        class: if is_cloud { "exec-switch-btn active" } else { "exec-switch-btn" },
+                        aria_pressed: "{is_cloud}",
+                        disabled: busy,
+                        title: "Run faster using {target_cloud} API key",
+                        onclick: move |_| {
+                            settings.write().switch_execution_mode(true);
+                            let _ = settings.read().save();
+                        },
+                        "API Key"
+                    }
+                }
+                Link {
+                    to: Route::SettingsPage {},
+                    class: "nav-model-pill",
+                    style: "padding: 4px 10px; border-radius: 999px; font-size: 12px; background: var(--bg-panel);",
+                    title: "Click to change AI provider, API key, or model",
                     span { class: "nav-dot", aria_hidden: "true" }
-                    "{model}"
+                    "{pill_label}"
                 }
             }
         }

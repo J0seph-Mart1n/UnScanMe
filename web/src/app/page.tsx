@@ -60,8 +60,9 @@ export default function ShowcasePage() {
                     </h1>
 
                     <p className="hero-lead">
-                      The local desktop workbench for teams who turn messy scans and locked PDFs into
-                      editable tables and crisp vector PDFs.
+                      The desktop workbench that turns messy scans and locked PDFs into editable
+                      HTML, interactive tables, and crisp vector PDFs — 100% locally with Ollama or
+                      faster with your own API keys.
                     </p>
 
                     <div className="hero-cta-wrap">

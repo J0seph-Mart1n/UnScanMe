@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   PAGE_PRESETS,
   REFINE_PRESETS,
@@ -15,6 +15,8 @@ import { WorkbenchOutputPane } from "./WorkbenchOutputPane";
 export function WorkbenchDemo() {
   const [sampleId, setSampleId] = useState<SampleId>("invoice");
   const [outputTab, setOutputTab] = useState<OutputTab>("preview");
+  const [execMode, setExecMode] = useState<"ollama" | "api">("ollama");
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [deskewed, setDeskewed] = useState<boolean>(false);
   const [cropActive, setCropActive] = useState<boolean>(true);
   const [serifFont, setSerifFont] = useState<boolean>(false);
@@ -23,6 +25,15 @@ export function WorkbenchDemo() {
   const [extraRows, setExtraRows] = useState<TableRowItem[]>([]);
   const [refineText, setRefineText] = useState<string>("");
   const [refineLog, setRefineLog] = useState<string>("Ready · 100% offline processing");
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (streamTimerRef.current) {
+        clearTimeout(streamTimerRef.current);
+      }
+    };
+  }, []);
 
   const sample = SAMPLES[sampleId];
   const allRows = [...sample.rows, ...extraRows];
@@ -34,26 +45,64 @@ export function WorkbenchDemo() {
     setCropActive(true);
   };
 
+  const handleSwitchExecMode = (nextMode: "ollama" | "api") => {
+    if (isGenerating) return;
+    setExecMode(nextMode);
+    setRefineLog(
+      nextMode === "api"
+        ? "Switched to API Key · Gemini 2.5 Flash ready"
+        : "Switched to Ollama · 100% offline local mode",
+    );
+  };
+
+  const cancelGeneration = () => {
+    if (streamTimerRef.current) {
+      clearTimeout(streamTimerRef.current);
+      streamTimerRef.current = null;
+    }
+    setIsGenerating(false);
+    setRefineLog("Generation cancelled.");
+  };
+
   const applyRefinement = (instruction: string) => {
     const trimmed = instruction.trim();
-    if (!trimmed) return;
-    const lower = trimmed.toLowerCase();
-    if (lower.includes("serif")) {
-      setSerifFont(true);
-    } else if (lower.includes("sans")) {
-      setSerifFont(false);
+    if (!trimmed || isGenerating) return;
+
+    if (streamTimerRef.current) {
+      clearTimeout(streamTimerRef.current);
     }
-    if (lower.includes("row") || lower.includes("warranty") || lower.includes("discount")) {
-      setExtraRows((prev) => [
-        ...prev,
-        { col1: "Added via Refine AI", col2: "1 item", col3: "Included" },
-      ]);
-    }
-    if (lower.includes("highlight") || lower.includes("emerald")) {
-      setHighlightTotal(true);
-    }
-    setRefineLog(`Applied "${trimmed}" locally`);
-    setRefineText("");
+
+    setIsGenerating(true);
+    setRefineLog(
+      execMode === "api"
+        ? "Streaming with gemini-2.5-flash (0.3s)…"
+        : "Generating with qwen2.5vl:3b locally…",
+    );
+
+    const delay = execMode === "api" ? 360 : 760;
+    streamTimerRef.current = setTimeout(() => {
+      streamTimerRef.current = null;
+      const lower = trimmed.toLowerCase();
+      if (lower.includes("serif")) {
+        setSerifFont(true);
+      } else if (lower.includes("sans")) {
+        setSerifFont(false);
+      }
+      if (lower.includes("row") || lower.includes("warranty") || lower.includes("discount")) {
+        setExtraRows((prev) => [
+          ...prev,
+          { col1: "Added via Refine AI", col2: "1 item", col3: "Included" },
+        ]);
+      }
+      if (lower.includes("highlight") || lower.includes("emerald")) {
+        setHighlightTotal(true);
+      }
+      setIsGenerating(false);
+      setRefineLog(
+        `Applied "${trimmed}" via ${execMode === "api" ? "Gemini API" : "local Ollama"}`,
+      );
+      setRefineText("");
+    }, delay);
   };
 
   const paperTilt = deskewed ? 0 : -1.2;
@@ -106,9 +155,33 @@ export function WorkbenchDemo() {
             </button>
           </div>
 
+          <div className="sidebar-group">
+            <span className="sidebar-label">AI Execution</span>
+            <div className="wb-exec-switch" role="group" aria-label="AI execution mode">
+              <button
+                type="button"
+                className={`wb-exec-btn ${execMode === "ollama" ? "is-active" : ""}`}
+                aria-pressed={execMode === "ollama"}
+                disabled={isGenerating}
+                onClick={() => handleSwitchExecMode("ollama")}
+              >
+                Ollama
+              </button>
+              <button
+                type="button"
+                className={`wb-exec-btn ${execMode === "api" ? "is-active" : ""}`}
+                aria-pressed={execMode === "api"}
+                disabled={isGenerating}
+                onClick={() => handleSwitchExecMode("api")}
+              >
+                API Key
+              </button>
+            </div>
+          </div>
+
           <div className="sidebar-status">
             <span className="status-dot" aria-hidden="true" />
-            <span>Ollama · Local GPU</span>
+            <span>{execMode === "api" ? "Gemini · 2.5 Flash API" : "Ollama · qwen2.5vl:3b"}</span>
           </div>
         </aside>
 
@@ -248,15 +321,27 @@ export function WorkbenchDemo() {
                     key={preset}
                     type="button"
                     className="btn-chip"
+                    disabled={isGenerating}
                     onClick={() => applyRefinement(preset)}
                   >
                     {preset}
                   </button>
                 ))}
               </div>
-              <button type="submit" className="btn-lime-sm">
-                Apply
-              </button>
+              {isGenerating ? (
+                <button
+                  type="button"
+                  className="wb-stop-btn"
+                  onClick={cancelGeneration}
+                  title="Stop AI generation"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button type="submit" className="btn-lime-sm">
+                  Apply
+                </button>
+              )}
             </form>
             <p className="wb-refine-status" role="status" aria-live="polite">
               {refineLog}

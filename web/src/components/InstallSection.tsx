@@ -22,8 +22,8 @@ export function InstallSection() {
           <p className="eyebrow-muted">Desktop Installers</p>
           <h2 id="download-heading">Get UnScanMe for your computer</h2>
           <p>
-            Lightweight, self-contained native installers — no cloud sign-in or subscription
-            required.
+            Self-contained native installers — run 100% offline with Ollama out of the box, or
+            switch to your own API key anytime.
           </p>
         </div>
 

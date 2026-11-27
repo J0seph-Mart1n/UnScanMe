@@ -11,13 +11,6 @@ export type CapabilityIconName =
   | "paste"
   | "page";
 
-export interface NavDropdownItem {
-  title: string;
-  description: string;
-  href: string;
-  download?: string;
-}
-
 export interface TableRowItem {
   col1: string;
   col2: string;
@@ -76,61 +69,19 @@ export interface PlatformDownload {
   commandHint?: string;
 }
 
-export const NAV_FEATURES: NavDropdownItem[] = [
-  {
-    title: "Guided Scan Cleanup",
-    description: "White-box crop, 90° rotate & auto-deskew in Rust",
-    href: "#features",
-  },
-  {
-    title: "Interactive Table Editor",
-    description: "Edit cells inline, add rows & drag whole tables",
-    href: "#preview",
-  },
-  {
-    title: "PDF Layout Recovery",
-    description: "Unlock trapped PDFs offline or via local Vision AI",
-    href: "#features",
-  },
-  {
-    title: "Refine with Local AI",
-    description: "Conversational styling & HTML5 edits on your GPU",
-    href: "#how-it-works",
-  },
-];
-
-export const NAV_DOWNLOADS: NavDropdownItem[] = [
-  {
-    title: "Windows Setup (.exe)",
-    description: "Windows 10 & 11 · 64-bit native installer",
-    href: "/downloads/UnScanMe-Setup-0.1.0-x64.exe",
-    download: "UnScanMe-Setup-0.1.0-x64.exe",
-  },
-  {
-    title: "macOS Universal (.dmg)",
-    description: "Apple Silicon & Intel · Drag-free app installer",
-    href: "/downloads/UnScanMe-0.1.0-universal.dmg",
-    download: "UnScanMe-0.1.0-universal.dmg",
-  },
-  {
-    title: "Linux Installer",
-    description: "Ubuntu, Debian, Mint, Fedora & Arch · 64-bit ELF",
-    href: "/downloads/UnScanMe-Installer-0.1.0-linux-x86_64",
-    download: "UnScanMe-Installer-0.1.0-linux-x86_64",
-  },
-];
-
 export const MARQUEE_ITEMS: string[] = [
-  "Local Ollama Vision",
-  "Poppler BBox Tables",
+  "Ollama ↔ Cloud API Switch",
+  "Gemini · OpenAI · Claude",
+  "Editable PDF-to-HTML",
+  "Parallel Offline OCR",
+  "Precision Visual Editor",
+  "Live Stream & Instant Stop",
   "Pure-Rust Auto-Deskew",
-  "Interactive Table Editor",
   "Searchable Vector PDFs",
-  "100% Offline Privacy",
 ];
 
 export const STATEMENT_TEXT =
-  "Modern teams use UnScanMe to rescue locked scans and PDFs, blending fast local vision models with an interactive visual editor so every document is clean, editable, and print-ready without touching the cloud.";
+  "Use UnScanMe to unlock scans and PDFs switching in one click between 100% offline Ollama and fast cloud API keys, with live conversion progress, instant cancellation, and a visual editor.";
 
 export const PAGE_PRESETS: Record<PagePresetId, PagePreset> = {
   "a4-portrait": {
@@ -268,20 +219,20 @@ export const TESTIMONIALS: TestimonialItem[] = [
 export const WORKFLOW_STEPS: WorkflowStep[] = [
   {
     step: "01",
-    title: "Drop or paste any scan",
-    body: "Drag in a camera photo, crooked scan, or locked multi-page PDF — or press Ctrl+V to paste a screenshot straight from your clipboard.",
+    title: "Drop, paste, or pick your AI mode",
+    body: "Drag in a camera photo, crooked scan, or locked multi-page PDF — or press Ctrl+V — and flip between offline Ollama or Gemini, OpenAI, and Claude API keys.",
     icon: "paste",
   },
   {
     step: "02",
-    title: "Clean up & edit visually",
-    body: "Use the draggable white crop frame and one-click auto-deskew, edit table cells inline, drag whole tables, or ask local AI to refine styling.",
+    title: "Convert, edit & refine visually",
+    body: "Stream editable HTML with live progress and a Stop button; crop/auto-deskew, hover-select exact blocks or table cells, drag tables, or refine via AI chat.",
     icon: "table",
   },
   {
     step: "03",
     title: "Export a crisp vector PDF",
-    body: "Set your A4 or Letter margins from the top toolbar and export a lightweight, 100% searchable vector PDF in seconds.",
+    body: "Set your A4 or Letter margins from the top toolbar and export a lightweight, 100% searchable vector PDF via headless Chromium in seconds.",
     icon: "rocket",
   },
 ];
@@ -329,20 +280,20 @@ export const PLATFORM_DOWNLOADS: PlatformDownload[] = [
 
 export const FAQS = [
   {
-    q: "Does UnScanMe send my documents or scans to the cloud?",
-    a: "Never. Every step — white-box cropping, auto-deskew, PDF text extraction, table editing, local Ollama vision processing, and vector PDF rendering — runs 100% offline on your own machine.",
+    q: "Can I run 100% offline or use my own cloud API keys?",
+    a: "Yes — switch in one click from the top bar. By default every step runs 100% locally via Ollama, Poppler, Tesseract, and Chromium. When you want faster cloud throughput, plug in a Google Gemini, OpenAI, Anthropic Claude, OpenRouter, Groq, or Together API key (stored locally with 0600 permissions or read from environment variables).",
+  },
+  {
+    q: "How does PDF-to-HTML handle scanned vs. digital PDFs?",
+    a: "Scanned pages are never wrapped as flat uneditable images. Choose Convert Page (AI) for full layout, styling, and editable HTML elements, or use Fast OCR (Text) / Quick Extract HTML for instant offline parallel Tesseract and Poppler extraction.",
+  },
+  {
+    q: "Can I edit elements, fix tables, and stop a slow generation?",
+    a: "Yes. Visual Edit highlights selectable elements on hover so you can click paragraphs, headings, or table cells precisely, edit text inline, or drag entire tables. Every conversion streams live progress with a Stop button to cancel immediately.",
   },
   {
     q: "What file formats can I import and export?",
     a: "Paste screenshots directly from your clipboard or drop PNG, JPEG, WebP, TIFF, BMP, and PDF files. UnScanMe exports clean semantic HTML5 and lightweight, searchable vector PDFs.",
-  },
-  {
-    q: "Can I edit tables and fix wrong text after scanning?",
-    a: "Yes. Switch to the Table Editor to click and edit any cell, drag whole tables cleanly, add or delete rows and columns, or enter a plain-English request to refine styles with local AI.",
-  },
-  {
-    q: "Do I need a complex terminal setup to install AI models?",
-    a: "No. UnScanMe checks localhost Ollama automatically and lets you download lightweight vision models directly inside the app with live progress.",
   },
   {
     q: "Which operating systems are supported?",

@@ -37,8 +37,11 @@ export function BentoShowcase() {
           <article className="bento-wide-olive">
             <div className="olive-rings" aria-hidden="true" />
             <div className="bento-wide-copy">
-              <h3>Interactive Table Editor</h3>
-              <p>Click any cell, add rows cleanly, or drag whole tables across the page.</p>
+              <h3>Visual &amp; Table Editor</h3>
+              <p>
+                Hover-guided element selection, inline cell edits, and draggable tables — never
+                flat uneditable page images.
+              </p>
             </div>
 
             <figure className="bento-screenshot bento-screenshot-wide">
@@ -55,27 +58,27 @@ export function BentoShowcase() {
 
           {/* Card 3: Bottom-Middle Dark-Olive Card */}
           <article className="bento-square-olive">
-            <p className="square-eyebrow">100% Offline By</p>
-            <h3>Zero Cloud</h3>
+            <p className="square-eyebrow">1-Click Mode Switch</p>
+            <h3>Local or API</h3>
             <div className="avatar-stack" aria-hidden="true">
-              <span className="stack-badge">Win</span>
-              <span className="stack-badge">Mac</span>
-              <span className="stack-badge">Lin</span>
-              <span className="stack-badge">AI</span>
-              <span className="stack-badge is-lime">0%</span>
+              <span className="stack-badge">Loc</span>
+              <span className="stack-badge">Gem</span>
+              <span className="stack-badge">GPT</span>
+              <span className="stack-badge">API</span>
+              <span className="stack-badge is-lime">⚡</span>
             </div>
             <p className="square-rating">
               <StarIcon className="icon-xs lime-star" />
-              <span>Runs purely on local hardware</span>
+              <span>Offline Ollama default · Optional cloud keys</span>
             </p>
           </article>
 
           {/* Card 4: Bottom-Right Lime Card */}
           <article className="bento-square-lime">
             <div>
-              <h3>Built for Speed</h3>
+              <h3>Built for Speed &amp; Control</h3>
               <p className="square-lime-sub">
-                Lightweight native Rust &amp; Chromium vector PDF output.
+                Live streaming progress, instant Stop button, parallel OCR, and crisp vector PDFs.
               </p>
             </div>
 
@@ -90,9 +93,9 @@ export function BentoShowcase() {
               <div className="speed-pill">
                 <span className="speed-pill-left">
                   <ZapIcon className="icon-xs lime-star" />
-                  <span>Offline AI Latency</span>
+                  <span>Local OCR / API</span>
                 </span>
-                <span className="speed-pill-val">0ms cloud</span>
+                <span className="speed-pill-val">Sub-second</span>
               </div>
             </div>
           </article>

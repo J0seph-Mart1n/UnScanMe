@@ -8,8 +8,9 @@ use crate::{
     page_setup::{self, Orientation, PageSetup, PaperSize},
     pdf,
     pdf_import::{self, ExtractedPage, LoadedPdf},
-    settings::Settings,
+    settings::{AiProvider, Settings},
     views::VisualEditor,
+    Route,
 };
 use base64::Engine;
 use dioxus::core::Task;
@@ -23,6 +24,7 @@ pub enum Status {
     Idle,
     Busy(String),
     MissingModel(String),
+    MissingApiKey(AiProvider),
     Downloading(PullUpdate),
     Ok(String),
     Error(String),
@@ -419,7 +421,7 @@ async fn convert_image_bytes(
 
     state.status.set(Status::Busy(format!(
         "Preparing image and contacting {}…",
-        cfg.model
+        cfg.active_model()
     )));
 
     let max_dim = cfg.max_image_dim;
@@ -431,7 +433,7 @@ async fn convert_image_bytes(
         Err(e) => return state.status.set(Status::Error(e.to_string())),
     };
 
-    let model_name = cfg.model.clone();
+    let model_name = cfg.active_model().to_string();
     let mut status_sig = state.status;
     match ollama::image_to_html_streaming(&cfg, &prepared_bytes, move |p| {
         status_sig.set(Status::Busy(format_ai_progress("", &model_name, &p)));
@@ -452,10 +454,10 @@ async fn convert_image_bytes(
 }
 
 async fn generate_from_prompt(cfg: Settings, user_prompt: String, mut state: ConvertState) {
+    let model_name = cfg.active_model().to_string();
     state
         .status
-        .set(Status::Busy(format!("Generating document with {}…", cfg.model)));
-    let model_name = cfg.model.clone();
+        .set(Status::Busy(format!("Generating document with {model_name}…")));
     let mut status_sig = state.status;
     match ollama::prompt_to_html_streaming(&cfg, &user_prompt, move |p| {
         status_sig.set(Status::Busy(format_ai_progress("", &model_name, &p)));
@@ -505,9 +507,9 @@ async fn convert_pdf_with_ai(
                 };
                 ocr_done += 1;
                 let prefix = format!("Page {ocr_done}/{total_ocr}: ");
+                let model_name = cfg.active_model().to_string();
                 state.status.set(Status::Busy(format!(
-                    "{prefix}Preparing image and contacting {}…",
-                    cfg.model
+                    "{prefix}Preparing image and contacting {model_name}…"
                 )));
                 let raw_bytes = pdf_page.png_bytes.clone();
                 let max_dim = cfg.max_image_dim;
@@ -519,7 +521,6 @@ async fn convert_pdf_with_ai(
                     Ok(Err(e)) => return state.status.set(Status::Error(format!("{e:#}"))),
                     Err(e) => return state.status.set(Status::Error(e.to_string())),
                 };
-                let model_name = cfg.model.clone();
                 let mut status_sig = state.status;
                 match ollama::image_to_html_streaming(&cfg, &prepared_bytes, move |p| {
                     status_sig.set(Status::Busy(format_ai_progress(&prefix, &model_name, &p)));
@@ -552,6 +553,22 @@ async fn convert_pdf_with_ai(
 }
 
 async fn ensure_model_ready(cfg: &Settings, mut status: Signal<Status>) -> bool {
+    if cfg.provider.is_cloud() {
+        if cfg.active_model().trim().is_empty() {
+            status.set(Status::Error("Model name cannot be empty. Configure it in Settings.".into()));
+            return false;
+        }
+        if cfg.provider.requires_api_key() && cfg.effective_api_key().0.is_empty() {
+            status.set(Status::MissingApiKey(cfg.provider));
+            return false;
+        }
+        if cfg.provider == AiProvider::OpenAiCompatible && cfg.custom_api_url.trim().is_empty() {
+            status.set(Status::Error("Enter an API Base URL in Settings.".into()));
+            return false;
+        }
+        return true;
+    }
+
     status.set(Status::Busy(format!("Checking if `{}` is installed in Ollama…", cfg.model)));
     match ollama::is_model_installed(&cfg.ollama_url, &cfg.model).await {
         Ok(true) => true,
@@ -781,9 +798,25 @@ pub fn Convert() -> Element {
         });
     });
 
-    // Proactively check whether the configured model is installed in Ollama.
+    // Proactively validate active provider configuration / local Ollama model.
     use_effect(move || {
         let cfg = settings();
+        if cfg.provider.is_cloud() {
+            if cfg.provider.requires_api_key() && cfg.effective_api_key().0.is_empty() {
+                if matches!(
+                    status(),
+                    Status::Idle | Status::MissingModel(_) | Status::MissingApiKey(_)
+                ) {
+                    status.set(Status::MissingApiKey(cfg.provider));
+                }
+            } else if matches!(status(), Status::MissingModel(_) | Status::MissingApiKey(_)) {
+                status.set(Status::Idle);
+            }
+            return;
+        }
+        if matches!(status(), Status::MissingApiKey(_)) {
+            status.set(Status::Idle);
+        }
         spawn(async move {
             match ollama::is_model_installed(&cfg.ollama_url, &cfg.model).await {
                 Ok(false) => {
@@ -1073,10 +1106,12 @@ pub fn Convert() -> Element {
         let Some(img) = image() else { return };
         let cfg = settings();
         let extra = extra_prompt();
-        status.set(Status::Busy(format!(
-            "Checking if `{}` is installed in Ollama…",
-            cfg.model
-        )));
+        let init_msg = if cfg.provider.is_cloud() {
+            format!("Preparing image for {} ({})…", cfg.active_model(), cfg.provider.short_label())
+        } else {
+            format!("Checking if `{}` is installed in Ollama…", cfg.model)
+        };
+        status.set(Status::Busy(init_msg));
         start_cancellable_task(active_task, task_seq, async move {
             if ensure_model_ready(&cfg, status).await {
                 convert_image_bytes(cfg, extra, img.bytes, state).await;
@@ -1090,10 +1125,12 @@ pub fn Convert() -> Element {
             return;
         }
         let cfg = settings();
-        status.set(Status::Busy(format!(
-            "Checking if `{}` is installed in Ollama…",
-            cfg.model
-        )));
+        let init_msg = if cfg.provider.is_cloud() {
+            format!("Contacting {} ({})…", cfg.active_model(), cfg.provider.short_label())
+        } else {
+            format!("Checking if `{}` is installed in Ollama…", cfg.model)
+        };
+        status.set(Status::Busy(init_msg));
         start_cancellable_task(active_task, task_seq, async move {
             if ensure_model_ready(&cfg, status).await {
                 generate_from_prompt(cfg, prompt_text, state).await;
@@ -1189,18 +1226,24 @@ pub fn Convert() -> Element {
                 }
             }
 
-            match ollama::is_model_installed(&cfg.ollama_url, &cfg.model).await {
-                Ok(true) => {
+            if cfg.provider.is_cloud() {
+                if ensure_model_ready(&cfg, status).await {
                     convert_pdf_with_ai(cfg, extra, &pdf, &plan, state).await;
                 }
-                Ok(false) => {
-                    status.set(Status::MissingModel(cfg.model));
-                }
-                Err(_) => {
-                    status.set(Status::Error(
-                        "This PDF is a scanned image with no selectable text layer. Install Tesseract OCR for fast offline conversion or start Ollama (`ollama serve`) for AI conversion."
-                            .into(),
-                    ));
+            } else {
+                match ollama::is_model_installed(&cfg.ollama_url, &cfg.model).await {
+                    Ok(true) => {
+                        convert_pdf_with_ai(cfg, extra, &pdf, &plan, state).await;
+                    }
+                    Ok(false) => {
+                        status.set(Status::MissingModel(cfg.model));
+                    }
+                    Err(_) => {
+                        status.set(Status::Error(
+                            "This PDF is a scanned image with no selectable text layer. Install Tesseract OCR for fast offline extraction, start Ollama (`ollama serve`), or add a cloud API key in Settings."
+                                .into(),
+                        ));
+                    }
                 }
             }
         });
@@ -1216,10 +1259,12 @@ pub fn Convert() -> Element {
         };
         let cfg = settings();
         let extra = extra_prompt();
-        status.set(Status::Busy(format!(
-            "Checking if `{}` is installed in Ollama…",
-            cfg.model
-        )));
+        let init_msg = if cfg.provider.is_cloud() {
+            format!("Preparing page for {} ({})…", cfg.active_model(), cfg.provider.short_label())
+        } else {
+            format!("Checking if `{}` is installed in Ollama…", cfg.model)
+        };
+        status.set(Status::Busy(init_msg));
         start_cancellable_task(active_task, task_seq, async move {
             if ensure_model_ready(&cfg, status).await {
                 convert_image_bytes(cfg, extra, page.png_bytes, state).await;
@@ -1243,10 +1288,12 @@ pub fn Convert() -> Element {
             return;
         }
         let cfg = settings();
-        status.set(Status::Busy(format!(
-            "Checking if `{}` is installed in Ollama…",
-            cfg.model
-        )));
+        let init_msg = if cfg.provider.is_cloud() {
+            format!("Refining HTML with {} ({})…", cfg.active_model(), cfg.provider.short_label())
+        } else {
+            format!("Checking if `{}` is installed in Ollama…", cfg.model)
+        };
+        status.set(Status::Busy(init_msg));
         start_cancellable_task(active_task, task_seq, async move {
             if !ensure_model_ready(&cfg, status).await {
                 return;
@@ -1267,9 +1314,9 @@ pub fn Convert() -> Element {
                 refine_input.set(String::new());
             }
 
-            status.set(Status::Busy(format!("Refining HTML with {}…", cfg.model)));
+            let model_name = cfg.active_model().to_string();
+            status.set(Status::Busy(format!("Refining HTML with {model_name}…")));
             let current_html = html();
-            let model_name = cfg.model.clone();
             let mut progress_status = status;
             match ollama::refine_html_streaming(&cfg, &current_html, &prior, &trimmed, move |p| {
                 progress_status.set(Status::Busy(format_ai_progress("Refining: ", &model_name, &p)));
@@ -1891,6 +1938,18 @@ pub fn Convert() -> Element {
                                 Mode::PdfToHtml if has_pdf => format!("Download `{model}` & Convert"),
                                 _ => format!("Download `{model}`"),
                             }
+                        }
+                    }
+                },
+                Status::MissingApiKey(provider) => rsx! {
+                    div { class: "status warn", role: "status", aria_live: "polite",
+                        span { "{provider} API key is not configured. Add an API key in Settings for fast cloud execution." }
+                        span { class: "spacer" }
+                        Link {
+                            to: Route::SettingsPage {},
+                            class: "primary",
+                            style: "text-decoration: none; display: inline-flex; align-items: center; padding: 6px 12px; border-radius: var(--radius-md); font-size: 13px; font-weight: 500;",
+                            "Configure API Key"
                         }
                     }
                 },

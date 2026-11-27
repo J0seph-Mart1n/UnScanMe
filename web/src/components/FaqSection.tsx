@@ -1,15 +1,11 @@
 "use client";
 
 import React, { useState } from "react";
-import { FAQS, PLATFORM_DOWNLOADS, type OsTab } from "../data/showcase-data";
+import { FAQS } from "../data/showcase-data";
 import { ArrowRightIcon, ChevronDownIcon, LogoMarkIcon } from "./Icons";
 
 export function FaqSection() {
   const [openIndex, setOpenIndex] = useState<number | null>(0);
-  const [selectedOs, setSelectedOs] = useState<OsTab>("windows");
-
-  const activeDownload =
-    PLATFORM_DOWNLOADS.find((p) => p.id === selectedOs) ?? PLATFORM_DOWNLOADS[0];
 
   return (
     <>
@@ -19,8 +15,8 @@ export function FaqSection() {
             <p className="eyebrow-muted">Frequently Asked Questions</p>
             <h2 id="faq-heading">Everything you need to know</h2>
             <p>
-              Quick answers on offline privacy, supported formats, interactive table editing, and
-              desktop installers.
+              Quick answers on offline Ollama vs. cloud API keys, editable PDF-to-HTML conversion,
+              visual editing, and desktop installers.
             </p>
             <div className="faq-top-actions">
               <a href="#download" className="btn-white-pill">
@@ -77,26 +73,15 @@ export function FaqSection() {
               <br />
               clean documents today
             </h2>
-
-            <div className="cta-pill-bar">
-              <div className="cta-os-tabs" role="group" aria-label="Choose installer OS">
-                {PLATFORM_DOWNLOADS.map((plat) => (
-                  <button
-                    key={plat.id}
-                    type="button"
-                    className={`cta-os-tab ${selectedOs === plat.id ? "is-active" : ""}`}
-                    onClick={() => setSelectedOs(plat.id)}
-                  >
-                    {plat.title}
-                  </button>
-                ))}
-              </div>
+            <div className="cta-portfolio-bar">
+              <span className="cta-portfolio-label">Visit My Portfolio</span>
               <a
-                href={activeDownload.href}
-                download={activeDownload.fileName}
-                className="cta-download-btn"
+                href="https://j0seph-portfolio.vercel.app/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="cta-portfolio-link"
               >
-                <span>Download</span>
+                <span>Joseph&apos;s Portfolio</span>
                 <ArrowRightIcon className="icon-xs" />
               </a>
             </div>
@@ -156,14 +141,14 @@ export function FaqSection() {
                 <h3>RESOURCES</h3>
                 <ul>
                   <li><a href="#faq">FAQ</a></li>
-                  <li><span>100% Local AI</span></li>
-                  <li><span>Vector PDF Engine</span></li>
+                  <li><span>Local Ollama &amp; Cloud API</span></li>
+                  <li><span>Editable PDF-to-HTML</span></li>
                 </ul>
               </div>
             </div>
 
             <div className="lime-footer-bottom">
-              <span>© 2026 UnScanMe. All rights reserved. Runs 100% locally.</span>
+              <span>© 2026 UnScanMe. All rights reserved. Local-first with optional cloud API keys.</span>
             </div>
           </div>
         </footer>

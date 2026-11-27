@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import io
 import os
 import pathlib
@@ -150,7 +151,10 @@ def find_lld_link() -> str:
     )
     if rustup_lld.is_file():
         return str(rustup_lld)
-    raise FileNotFoundError(f"lld-link not found at {rustup_lld}")
+    on_path = shutil.which("lld-link")
+    if on_path:
+        return on_path
+    raise FileNotFoundError(f"lld-link not found at {rustup_lld} or in PATH")
 
 
 def build_windows_exe(out_path: pathlib.Path) -> None:
@@ -224,8 +228,9 @@ def _both32(v: int) -> bytes:
 
 
 def _iso_date7() -> bytes:
-    # 2026-11-24 00:00:00 UTC
-    return bytes([126, 11, 24, 0, 0, 0, 0])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    yr = max(0, min(255, now.year - 1900))
+    return bytes([yr, now.month, now.day, now.hour, now.minute, min(59, now.second), 0])
 
 
 def _rr_px(mode: int, is_dir: bool) -> bytes:
@@ -498,10 +503,12 @@ def build_macos_dmg(out_path: pathlib.Path) -> pathlib.Path:
     return iso_check_path
 
 
-def build_linux_elf_installer(out_path: pathlib.Path) -> None:
+def build_linux_elf_installer(out_path: pathlib.Path, skip_build: bool = False) -> None:
     bin_src = LINUX_RELEASE_APP / "unscanme"
-    if not bin_src.is_file():
-        subprocess.run(["dx", "build", "--desktop", "--release"], cwd=ROOT / "desktop", check=True)
+    if not skip_build or not bin_src.is_file():
+        env = os.environ.copy()
+        env.setdefault("CARGO_NET_OFFLINE", "true")
+        subprocess.run(["dx", "build", "--desktop", "--release"], cwd=ROOT / "desktop", env=env, check=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         td = pathlib.Path(tmp)
@@ -552,6 +559,7 @@ def build_linux_elf_installer(out_path: pathlib.Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--linux-only", action="store_true")
+    parser.add_argument("--skip-build", action="store_true")
     args = parser.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -576,7 +584,7 @@ def main() -> None:
             p.unlink()
 
     linux_path = OUT_DIR / LINUX_BIN_NAME
-    build_linux_elf_installer(linux_path)
+    build_linux_elf_installer(linux_path, skip_build=args.skip_build)
     print("Linux universal installer:", linux_path, linux_path.stat().st_size, "bytes")
 
     if not args.linux_only:

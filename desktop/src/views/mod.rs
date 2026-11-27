@@ -1,5 +1,5 @@
 mod convert;
-pub use convert::{Convert, ConvertState};
+pub use convert::{Convert, ConvertState, Status};
 
 mod visual_editor;
 pub use visual_editor::VisualEditor;

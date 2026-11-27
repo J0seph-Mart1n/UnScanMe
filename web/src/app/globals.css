@@ -207,7 +207,7 @@
 }
 
 .notch-wrap {
-  max-width: 820px;
+  max-width: 660px;
   margin: 0 auto;
   pointer-events: auto;
 }
@@ -217,8 +217,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1.25rem;
-  padding: 0 1.25rem;
+  gap: 1rem;
+  padding: 0 1.1rem;
   background: var(--bg-black);
   border-bottom-left-radius: 26px;
   border-bottom-right-radius: 26px;
@@ -233,9 +233,13 @@
 }
 
 .brand-dot {
-  width: 18px;
-  height: 18px;
-  color: #ffffff;
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+  border-radius: 7px;
+  background: var(--lime);
+  color: #0b0e05;
+  flex-shrink: 0;
 }
 
 .brand-name {
@@ -245,9 +249,11 @@
 }
 
 .desktop-nav {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: 1.65rem;
+  justify-content: space-evenly;
+  gap: 1.5rem;
 }
 
 .nav-dropdown-wrap {
@@ -594,6 +600,39 @@
   color: rgba(255, 255, 255, 0.62);
   padding: 0.4rem;
   border-top: 1px solid #222622;
+}
+
+.wb-exec-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 7px;
+  background: #141714;
+  border: 1px solid #252b25;
+}
+
+.wb-exec-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.3rem 0.4rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.wb-exec-btn.is-active {
+  background: rgba(168, 214, 72, 0.2);
+  color: var(--lime);
+}
+
+.wb-exec-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .status-dot {
@@ -986,6 +1025,23 @@
   font-size: 0.74rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.wb-stop-btn {
+  min-height: 30px;
+  padding: 0.25rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  background: rgba(239, 68, 68, 0.18);
+  color: #fecaca;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wb-stop-btn:hover {
+  background: rgba(239, 68, 68, 0.32);
+  color: #ffffff;
 }
 
 .wb-refine-status {
@@ -1756,49 +1812,45 @@
   margin-bottom: 1.85rem;
 }
 
-.cta-pill-bar {
+.cta-portfolio-bar {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  background: #111111;
-  padding: 0.4rem 0.45rem 0.4rem 0.75rem;
-  border-radius: 12px;
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.22);
-  flex-wrap: wrap;
   justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.45rem 0.5rem 0.45rem 1rem;
+  border-radius: 14px;
+  background: #111111;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.22);
 }
 
-.cta-os-tabs {
-  display: inline-flex;
-  gap: 0.25rem;
-}
-
-.cta-os-tab {
-  border: 0;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.68);
-  font-size: 0.78rem;
+.cta-portfolio-label {
+  font-size: 0.85rem;
   font-weight: 600;
-  padding: 0.45rem 0.7rem;
-  border-radius: 7px;
-  cursor: pointer;
+  color: rgba(255, 255, 255, 0.82);
 }
 
-.cta-os-tab.is-active {
-  background: rgba(168, 214, 72, 0.2);
-  color: var(--lime);
-}
-
-.cta-download-btn {
+.cta-portfolio-link {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.52rem 1rem;
-  border-radius: 8px;
+  gap: 0.45rem;
+  padding: 0.55rem 1rem;
+  border-radius: 9px;
   background: #ffffff;
   color: #0b0e07;
-  font-size: 0.82rem;
+  font-size: 0.86rem;
   font-weight: 700;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.cta-portfolio-link:hover {
+  background: var(--lime);
+  transform: translateY(-1px);
+}
+
+.cta-portfolio-link:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 3px;
 }
 
 .lime-footer {
@@ -1826,9 +1878,13 @@
 }
 
 .lime-brand-dot {
-  width: 24px;
-  height: 24px;
-  color: #141a0a;
+  width: 28px;
+  height: 28px;
+  padding: 5px;
+  border-radius: 8px;
+  background: #141a0a;
+  color: var(--lime);
+  flex-shrink: 0;
 }
 
 .lime-footer-col h3 {
